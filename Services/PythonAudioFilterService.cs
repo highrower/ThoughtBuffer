@@ -30,9 +30,11 @@ public sealed class PythonAudioFilterService(
         var tempDirectory = Path.Combine(outputDirectory, "_temp");
         Directory.CreateDirectory(tempDirectory);
 
-        var tempWavPath = Path.Combine(
-            tempDirectory,
-            $"{Path.GetFileNameWithoutExtension(inputPath)}.16k.wav");
+        var baseName = Path.GetFileNameWithoutExtension(inputPath);
+        var tempWavPath = Path.Combine(tempDirectory, $"{baseName}.16k.wav");
+
+        Console.WriteLine($"[{baseName}] Starting filter...");
+        Console.WriteLine($"[{baseName}] Step 1/2: converting mp3 -> 16k wav");
 
         try
         {
@@ -41,14 +43,24 @@ public sealed class PythonAudioFilterService(
                 "-vn -ac 1 -ar 16000 -sample_fmt s16 " +
                 $"\"{tempWavPath}\"";
 
-            await RunProcessAsync(ffmpegPath, ffmpegArgs, cancellationToken);
+            await RunProcessAsync(
+                ffmpegPath,
+                ffmpegArgs,
+                cancellationToken,
+                heartbeatLabel: $"[{baseName}] ffmpeg still running");
+
+            Console.WriteLine($"[{baseName}] Step 2/2: running python VAD");
 
             var pythonArgs =
                 $"\"{scriptPath}\" " +
                 $"--input \"{tempWavPath}\" " +
                 $"--output \"{finalOutputPath}\"";
 
-            var stdout = await RunProcessAsync(pythonExe, pythonArgs, cancellationToken);
+            var stdout = await RunProcessAsync(
+                pythonExe,
+                pythonArgs,
+                cancellationToken,
+                heartbeatLabel: $"[{baseName}] python filter still running");
 
             if (!string.IsNullOrWhiteSpace(stdout))
             {
@@ -66,10 +78,17 @@ public sealed class PythonAudioFilterService(
                     }
 
                     if (doc.RootElement.TryGetProperty("segments", out var segmentsProp) &&
-                        segmentsProp.ValueKind == JsonValueKind.Number &&
-                        segmentsProp.GetInt32() == 0)
+                        segmentsProp.ValueKind == JsonValueKind.Number)
+                    {
+                        Console.WriteLine($"[{baseName}] Segments kept: {segmentsProp.GetInt32()}");
+                    }
+
+                    if (doc.RootElement.TryGetProperty("segments", out var zeroSegProp) &&
+                        zeroSegProp.ValueKind == JsonValueKind.Number &&
+                        zeroSegProp.GetInt32() == 0)
                     {
                         File.Copy(tempWavPath, finalOutputPath, true);
+                        Console.WriteLine($"[{baseName}] No speech detected, copied temp wav as fallback");
                     }
                 }
                 catch (JsonException)
@@ -82,6 +101,7 @@ public sealed class PythonAudioFilterService(
             if (!File.Exists(finalOutputPath))
                 throw new InvalidOperationException("Python filter script did not create the filtered output file.");
 
+            Console.WriteLine($"[{baseName}] Finished: {finalOutputPath}");
             return finalOutputPath;
         }
         finally
@@ -100,7 +120,8 @@ public sealed class PythonAudioFilterService(
     private static async Task<string> RunProcessAsync(
         string fileName,
         string arguments,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        string heartbeatLabel)
     {
         var psi = new ProcessStartInfo
         {
@@ -117,6 +138,12 @@ public sealed class PythonAudioFilterService(
 
         var stdoutTask = process.StandardOutput.ReadToEndAsync();
         var stderrTask = process.StandardError.ReadToEndAsync();
+
+        while (!process.HasExited)
+        {
+            Console.WriteLine($"{heartbeatLabel}...");
+            await Task.Delay(TimeSpan.FromSeconds(15), cancellationToken);
+        }
 
         await process.WaitForExitAsync(cancellationToken);
 
