@@ -1,0 +1,40 @@
+# C# build artifacts
+bin/
+obj/
+
+# Visual Studio
+.vs/
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+
+# Visual Studio Code
+.vscode/
+*.code-workspace
+
+# NuGet
+packages/
+*.nupkg
+*.snupkg
+.nuget/
+
+# ReSharper / JetBrains IDEs
+.idea/
+*.sln.iml
+_ReSharper*/
+*.resharper
+
+# Test Results
+TestResults/
+
+# IDE
+.idea/
+.DS_Store
+
+# Build logs
+*.log
+
+# Rider
+.idea/
+*.sln.iml
