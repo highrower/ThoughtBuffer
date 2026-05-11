@@ -18,12 +18,7 @@ var allowedAudioExtensions = new HashSet<string>(StringComparer.OrdinalIgnoreCas
 var builder = WebApplication.CreateBuilder(args);
 
 builder.Services.AddEndpointsApiExplorer();
-builder.Services.AddSingleton(sp =>
-{
-    var options = builder.Configuration.GetLocalStorageOptions();
-
-    return CreateApiPaths(options);
-});
+builder.Services.AddSingleton(_ => CreateApiPaths(builder.Configuration.GetLocalStorageOptions()));
 builder.Services.AddScoped<ITranscriptionService>(_ =>
 {
     var options = ResolveOpenAiOptions(builder.Configuration);
@@ -37,38 +32,89 @@ builder.Services.AddScoped<ISummarizationService>(_ =>
 builder.Services.AddScoped<IIngestionPipeline, IngestionPipeline>();
 
 var app = builder.Build();
+var startupLogger = app.Services.GetRequiredService<ILoggerFactory>().CreateLogger("ThoughtBuffer.Api.Startup");
+var startupPaths = app.Services.GetRequiredService<AppPaths>();
+var startupStorageOptions = builder.Configuration.GetLocalStorageOptions();
+var startupOpenAiOptions = ResolveOpenAiOptionsWithoutThrowing(builder.Configuration);
+
+startupLogger.LogInformation(
+    "ThoughtBuffer.Api started in {EnvironmentName}. Local storage root configured: {LocalStorageRootConfigured}. Max upload bytes: {MaxUploadBytes}.",
+    app.Environment.EnvironmentName,
+    !string.IsNullOrWhiteSpace(startupStorageOptions.RootPath),
+    startupStorageOptions.MaxUploadBytes);
+
+if (string.IsNullOrWhiteSpace(startupOpenAiOptions.ApiKey))
+{
+    startupLogger.LogWarning("OpenAI API key is not configured. Ingestion requests will fail until OpenAI:ApiKey or THOUGHT_BUFFER_OPENAI_KEY is set.");
+}
+
+startupLogger.LogInformation(
+    "Local filesystem storage is active at {StorageRoot}. This is temporary for hosted deployments until Blob Storage is introduced.",
+    startupPaths.appFolder);
 
 app.MapGet("/", () => Results.Ok(new
 {
     name = "ThoughtBuffer.Api",
-    endpoints = new[] { "POST /api/ingestions/audio" }
+    endpoints = new[] { "GET /health", "GET /api/config/status", "POST /api/ingestions/audio" }
 }));
+
+app.MapGet("/health", () => Results.Ok(new
+{
+    status = "healthy"
+}));
+
+app.MapGet("/api/config/status", (IWebHostEnvironment environment) =>
+{
+    var openAiOptions = ResolveOpenAiOptionsWithoutThrowing(builder.Configuration);
+    var storageOptions = builder.Configuration.GetLocalStorageOptions();
+
+    return Results.Ok(new ConfigStatusResponse(
+        !string.IsNullOrWhiteSpace(openAiOptions.ApiKey),
+        !string.IsNullOrWhiteSpace(storageOptions.RootPath),
+        storageOptions.MaxUploadBytes,
+        environment.EnvironmentName
+    ));
+});
 
 app.MapPost("/api/ingestions/audio", async (
     HttpRequest request,
     IServiceProvider services,
     AppPaths paths,
+    ILogger<Program> logger,
     CancellationToken cancellationToken) =>
 {
+    logger.LogInformation("Audio upload request received.");
+
     if (!request.HasFormContentType)
+    {
+        logger.LogWarning("Audio upload validation failed: request content type was not multipart/form-data.");
         return Results.BadRequest(new ApiErrorResponse(
             "Expected multipart/form-data with an audio file.",
             "invalid_request"
         ));
+    }
 
     var form = await request.ReadFormAsync(cancellationToken);
     var file = form.Files.GetFile("file") ?? form.Files.FirstOrDefault();
 
     if (file is null || file.Length == 0)
+    {
+        logger.LogWarning("Audio upload validation failed: missing or empty file.");
         return Results.BadRequest(new ApiErrorResponse(
             "No uploaded audio file was found.",
             "invalid_request"
         ));
+    }
 
     var storageOptions = builder.Configuration.GetLocalStorageOptions();
 
     if (file.Length > storageOptions.MaxUploadBytes)
     {
+        logger.LogWarning(
+            "Audio upload validation failed: file size {FileSize} exceeded max upload bytes {MaxUploadBytes}.",
+            file.Length,
+            storageOptions.MaxUploadBytes);
+
         return Results.BadRequest(new ApiErrorResponse(
             $"Uploaded file exceeds the configured limit of {storageOptions.MaxUploadBytes} bytes.",
             "invalid_file"
@@ -80,6 +126,10 @@ app.MapPost("/api/ingestions/audio", async (
 
     if (string.IsNullOrWhiteSpace(extension) || !allowedAudioExtensions.Contains(extension))
     {
+        logger.LogWarning(
+            "Audio upload validation failed: unsupported extension {Extension}.",
+            extension);
+
         return Results.BadRequest(new ApiErrorResponse(
             "Unsupported audio file extension. Allowed extensions: .wav, .mp3, .m4a, .mp4, .mpeg, .mpga, .webm.",
             "unsupported_media_type"
@@ -101,6 +151,7 @@ app.MapPost("/api/ingestions/audio", async (
 
     if (!storedPath.StartsWith(uploadRoot, StringComparison.OrdinalIgnoreCase))
     {
+        logger.LogWarning("Audio upload validation failed: sanitized path escaped upload root.");
         return Results.BadRequest(new ApiErrorResponse(
             "Invalid uploaded file name.",
             "invalid_file"
@@ -128,12 +179,24 @@ app.MapPost("/api/ingestions/audio", async (
 
     try
     {
+        logger.LogInformation(
+            "Ingestion started for session {SessionId}. Original file: {OriginalFileName}. Stored file: {StoredFileName}. Size bytes: {FileSize}.",
+            session.Id,
+            originalFileName,
+            storedFileName,
+            fileInfo.Length);
+
         var pipeline = services.GetRequiredService<IIngestionPipeline>();
         var results = await pipeline.ProcessLocalAudioFilesAsync(
             session,
             new[] { audioAsset },
             paths,
             cancellationToken);
+
+        logger.LogInformation(
+            "Ingestion completed for session {SessionId}. File count: {FileCount}.",
+            session.Id,
+            results.Count);
 
         return Results.Ok(new AudioIngestionResponse(
             session.Id,
@@ -149,8 +212,9 @@ app.MapPost("/api/ingestions/audio", async (
             )).ToList()
         ));
     }
-    catch (InvalidOperationException)
+    catch (InvalidOperationException ex)
     {
+        logger.LogError(ex, "Ingestion failed for session {SessionId}.", session.Id);
         return Results.Json(
             new ApiErrorResponse(
                 "The audio file could not be transcribed or summarized. Check API configuration and service availability.",
@@ -158,8 +222,9 @@ app.MapPost("/api/ingestions/audio", async (
             ),
             statusCode: StatusCodes.Status500InternalServerError);
     }
-    catch (Exception)
+    catch (Exception ex)
     {
+        logger.LogError(ex, "Unexpected ingestion failure for session {SessionId}.", session.Id);
         return Results.Json(
             new ApiErrorResponse(
                 "The audio ingestion request failed.",
@@ -188,14 +253,20 @@ static AppPaths CreateApiPaths(LocalStorageOptions options)
 
 static OpenAiOptions ResolveOpenAiOptions(IConfiguration configuration)
 {
-    var options = configuration
-        .GetOpenAiOptions();
-
-    if (string.IsNullOrWhiteSpace(options.ApiKey))
-        options.ApiKey = Environment.GetEnvironmentVariable("THOUGHT_BUFFER_OPENAI_KEY") ?? "";
+    var options = ResolveOpenAiOptionsWithoutThrowing(configuration);
 
     if (string.IsNullOrWhiteSpace(options.ApiKey))
         throw new InvalidOperationException("OpenAI API key not found. Set OpenAI:ApiKey or THOUGHT_BUFFER_OPENAI_KEY.");
+
+    return options;
+}
+
+static OpenAiOptions ResolveOpenAiOptionsWithoutThrowing(IConfiguration configuration)
+{
+    var options = configuration.GetOpenAiOptions();
+
+    if (string.IsNullOrWhiteSpace(options.ApiKey))
+        options.ApiKey = Environment.GetEnvironmentVariable("THOUGHT_BUFFER_OPENAI_KEY") ?? "";
 
     return options;
 }
