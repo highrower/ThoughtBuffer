@@ -82,3 +82,19 @@ public record AppPaths(
 Confirmed in Models/AppPaths.cs.
 
 Existing important files/classes found in repo include ThoughtBuffer.cs, Program.cs, Models/SummaryResult.cs, Services/ISummarizationService.cs, Services/ITranscriptionService.cs, Services/FfmpegAudioPreprocessor.cs, Services/OpenAiTranscriptionService.cs, Services/OpenAiSummarizationService.cs, Services/IAudioFilterService.cs, Models/RecordingEntry.cs, Models/AppPaths.cs, Formatting/MarkdownNoteBuilder.cs, and Services/PythonAudioFilterService.cs.
+
+## Product Direction
+
+ThoughtBuffer should not remain a console app long-term.
+
+The target architecture is API-first:
+- ASP.NET Core Web API as the primary host
+- CLI/console behavior may remain temporarily for local development
+- Current console workflow should be preserved only until equivalent API endpoints exist
+- Future integrations like Twilio should call the API/webhook endpoints directly
+- Azure hosting should target the API/worker shape, not the console app
+
+The app should evolve from:
+Local recorder CLI → generic ingestion pipeline → ASP.NET API → Azure-hosted API/worker → Twilio integrations.
+
+Do not over-optimize the console app. Refactor it only enough to keep current behavior working while the API becomes the real entrypoint.

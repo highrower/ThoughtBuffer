@@ -9,7 +9,7 @@ public sealed class IngestionPipeline(
     ITranscriptionService transcriber,
     ISummarizationService summarizer) : IIngestionPipeline
 {
-    public async Task<IReadOnlyList<RecordingEntry>> ProcessLocalAudioFilesAsync(
+    public async Task<IReadOnlyList<IngestionPipelineResult>> ProcessLocalAudioFilesAsync(
         IngestionSession session,
         IReadOnlyList<AudioAsset> audioAssets,
         AppPaths paths,
@@ -29,6 +29,7 @@ public sealed class IngestionPipeline(
                 asset.ImportedAtUtc
             ))
             .ToList();
+        var results = new List<IngestionPipelineResult>();
 
         foreach (var entry in imported)
         {
@@ -46,6 +47,7 @@ public sealed class IngestionPipeline(
             if (File.Exists(transcriptPath) && File.Exists(notePath))
             {
                 Console.WriteLine($"Skipping already transcribed/summarized file: {entry.FileName}");
+                results.Add(new IngestionPipelineResult(entry, transcriptPath, notePath, null, null));
                 continue;
             }
 
@@ -63,6 +65,20 @@ public sealed class IngestionPipeline(
 
             var markdown = MarkdownNoteBuilder.Build(entry, summary, transcript);
             await File.WriteAllTextAsync(notePath, markdown, cancellationToken);
+
+            results.Add(new IngestionPipelineResult(
+                entry,
+                transcriptPath,
+                notePath,
+                new Transcript(
+                    Guid.NewGuid().ToString("N"),
+                    session.Id,
+                    entry.FileName,
+                    transcript,
+                    DateTime.UtcNow
+                ),
+                summary
+            ));
         }
 
         var json = JsonSerializer.Serialize(imported, new JsonSerializerOptions
@@ -73,6 +89,6 @@ public sealed class IngestionPipeline(
         var jsonPath = Path.Combine(paths.appFolder, "recordings.json");
         await File.WriteAllTextAsync(jsonPath, json, cancellationToken);
 
-        return imported;
+        return results;
     }
 }

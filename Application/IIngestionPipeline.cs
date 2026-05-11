@@ -4,7 +4,7 @@ namespace ThoughtBuffer.Application;
 
 public interface IIngestionPipeline
 {
-    Task<IReadOnlyList<RecordingEntry>> ProcessLocalAudioFilesAsync(
+    Task<IReadOnlyList<IngestionPipelineResult>> ProcessLocalAudioFilesAsync(
         IngestionSession session,
         IReadOnlyList<AudioAsset> audioAssets,
         AppPaths paths,
