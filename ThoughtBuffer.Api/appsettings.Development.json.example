@@ -1,5 +1,6 @@
 {
   "LocalStorage": {
-    "RootPath": "%LOCALAPPDATA%\\ThoughtBuffer\\Api"
+    "RootPath": "%LOCALAPPDATA%\\ThoughtBuffer\\Api",
+    "MaxUploadBytes": 26214400
   }
 }

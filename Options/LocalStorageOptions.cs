@@ -12,6 +12,7 @@ public sealed class LocalStorageOptions
     public string ArchiveFolder { get; set; } = "Archive";
     public string TranscriptFolder { get; set; } = "Transcripts";
     public string NotesFolder { get; set; } = "Notes";
+    public long MaxUploadBytes { get; set; } = 25 * 1024 * 1024;
 
     public string GetRootPath(string defaultHostFolder)
     {

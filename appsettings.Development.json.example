@@ -8,6 +8,7 @@
     "FilterScriptPath": "G:\\Projects\\Dotnet\\ThoughtBuffer\\python\\filter_audio.py"
   },
   "LocalStorage": {
-    "RootPath": "%LOCALAPPDATA%\\ThoughtBuffer\\Console"
+    "RootPath": "%LOCALAPPDATA%\\ThoughtBuffer\\Console",
+    "MaxUploadBytes": 26214400
   }
 }

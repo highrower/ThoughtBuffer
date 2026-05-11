@@ -39,7 +39,10 @@ public static class ThoughtBufferConfiguration
             FilteredFolder = section[nameof(LocalStorageOptions.FilteredFolder)] ?? "Filtered",
             ArchiveFolder = section[nameof(LocalStorageOptions.ArchiveFolder)] ?? "Archive",
             TranscriptFolder = section[nameof(LocalStorageOptions.TranscriptFolder)] ?? "Transcripts",
-            NotesFolder = section[nameof(LocalStorageOptions.NotesFolder)] ?? "Notes"
+            NotesFolder = section[nameof(LocalStorageOptions.NotesFolder)] ?? "Notes",
+            MaxUploadBytes = long.TryParse(section[nameof(LocalStorageOptions.MaxUploadBytes)], out var maxUploadBytes)
+                ? maxUploadBytes
+                : 25 * 1024 * 1024
         };
     }
 }

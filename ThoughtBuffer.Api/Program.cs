@@ -1,7 +1,19 @@
+using ThoughtBuffer.Api.Contracts;
 using ThoughtBuffer.Application;
 using ThoughtBuffer.Models;
 using ThoughtBuffer.Options;
 using ThoughtBuffer.Services;
+
+var allowedAudioExtensions = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+{
+    ".wav",
+    ".mp3",
+    ".m4a",
+    ".mp4",
+    ".mpeg",
+    ".mpga",
+    ".webm"
+};
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -34,29 +46,66 @@ app.MapGet("/", () => Results.Ok(new
 
 app.MapPost("/api/ingestions/audio", async (
     HttpRequest request,
-    IIngestionPipeline pipeline,
+    IServiceProvider services,
     AppPaths paths,
     CancellationToken cancellationToken) =>
 {
     if (!request.HasFormContentType)
-        return Results.BadRequest(new { error = "Expected multipart/form-data with an audio file." });
+        return Results.BadRequest(new ApiErrorResponse(
+            "Expected multipart/form-data with an audio file.",
+            "invalid_request"
+        ));
 
     var form = await request.ReadFormAsync(cancellationToken);
     var file = form.Files.GetFile("file") ?? form.Files.FirstOrDefault();
 
     if (file is null || file.Length == 0)
-        return Results.BadRequest(new { error = "No uploaded audio file was found." });
+        return Results.BadRequest(new ApiErrorResponse(
+            "No uploaded audio file was found.",
+            "invalid_request"
+        ));
+
+    var storageOptions = builder.Configuration.GetLocalStorageOptions();
+
+    if (file.Length > storageOptions.MaxUploadBytes)
+    {
+        return Results.BadRequest(new ApiErrorResponse(
+            $"Uploaded file exceeds the configured limit of {storageOptions.MaxUploadBytes} bytes.",
+            "invalid_file"
+        ));
+    }
+
+    var originalFileName = Path.GetFileName(file.FileName);
+    var extension = Path.GetExtension(originalFileName);
+
+    if (string.IsNullOrWhiteSpace(extension) || !allowedAudioExtensions.Contains(extension))
+    {
+        return Results.BadRequest(new ApiErrorResponse(
+            "Unsupported audio file extension. Allowed extensions: .wav, .mp3, .m4a, .mp4, .mpeg, .mpga, .webm.",
+            "unsupported_media_type"
+        ));
+    }
 
     var session = new IngestionSession(
         Guid.NewGuid().ToString("N"),
         IngestionMode.AudioFile,
         SourceSystem.ManualUpload,
         DateTime.UtcNow,
-        DisplayName: Path.GetFileName(file.FileName)
+        DisplayName: originalFileName
     );
 
-    var storedFileName = $"{session.Id}-{Path.GetFileName(file.FileName)}";
-    var storedPath = Path.Combine(paths.copyFileFolder, storedFileName);
+    var safeFileName = SanitizeFileName(originalFileName);
+    var storedFileName = $"{session.Id}-{safeFileName}";
+    var storedPath = Path.GetFullPath(Path.Combine(paths.copyFileFolder, storedFileName));
+    var uploadRoot = Path.GetFullPath(paths.copyFileFolder);
+
+    if (!storedPath.StartsWith(uploadRoot, StringComparison.OrdinalIgnoreCase))
+    {
+        return Results.BadRequest(new ApiErrorResponse(
+            "Invalid uploaded file name.",
+            "invalid_file"
+        ));
+    }
 
     await using (var stream = File.Create(storedPath))
     {
@@ -77,23 +126,47 @@ app.MapPost("/api/ingestions/audio", async (
         file.ContentType
     );
 
-    var results = await pipeline.ProcessLocalAudioFilesAsync(
-        session,
-        new[] { audioAsset },
-        paths,
-        cancellationToken);
+    try
+    {
+        var pipeline = services.GetRequiredService<IIngestionPipeline>();
+        var results = await pipeline.ProcessLocalAudioFilesAsync(
+            session,
+            new[] { audioAsset },
+            paths,
+            cancellationToken);
 
-    return Results.Ok(new AudioIngestionResponse(
-        session.Id,
-        session.Source.ToString(),
-        results.Select(result => new AudioIngestionFileResponse(
-            result.Recording.FileName,
-            result.TranscriptPath,
-            result.NotePath,
-            result.Transcript?.Text,
-            result.Summary
-        )).ToList()
-    ));
+        return Results.Ok(new AudioIngestionResponse(
+            session.Id,
+            session.Source.ToString(),
+            "completed",
+            results.Select(result => new AudioIngestionFileResult(
+                originalFileName,
+                result.Recording.FileName,
+                result.Transcript?.Text,
+                result.Summary,
+                result.TranscriptPath,
+                result.NotePath
+            )).ToList()
+        ));
+    }
+    catch (InvalidOperationException)
+    {
+        return Results.Json(
+            new ApiErrorResponse(
+                "The audio file could not be transcribed or summarized. Check API configuration and service availability.",
+                "ingestion_failed"
+            ),
+            statusCode: StatusCodes.Status500InternalServerError);
+    }
+    catch (Exception)
+    {
+        return Results.Json(
+            new ApiErrorResponse(
+                "The audio ingestion request failed.",
+                "ingestion_failed"
+            ),
+            statusCode: StatusCodes.Status500InternalServerError);
+    }
 });
 
 app.Run();
@@ -127,16 +200,15 @@ static OpenAiOptions ResolveOpenAiOptions(IConfiguration configuration)
     return options;
 }
 
-public record AudioIngestionResponse(
-    string SessionId,
-    string Source,
-    IReadOnlyList<AudioIngestionFileResponse> Files
-);
+static string SanitizeFileName(string fileName)
+{
+    var safeName = Path.GetFileName(fileName);
+    foreach (var invalidChar in Path.GetInvalidFileNameChars())
+    {
+        safeName = safeName.Replace(invalidChar, '-');
+    }
 
-public record AudioIngestionFileResponse(
-    string FileName,
-    string? TranscriptPath,
-    string? NotePath,
-    string? Transcript,
-    SummaryResult? Summary
-);
+    return string.IsNullOrWhiteSpace(safeName)
+        ? "audio-upload"
+        : safeName;
+}
