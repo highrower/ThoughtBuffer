@@ -8,5 +8,6 @@ public interface IIngestionPipeline
         IngestionSession session,
         IReadOnlyList<AudioAsset> audioAssets,
         AppPaths paths,
+        IngestionProcessingOptions? processingOptions = null,
         CancellationToken cancellationToken = default);
 }

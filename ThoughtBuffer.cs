@@ -121,6 +121,11 @@ public class ThoughtBuffer
         }
 
         IIngestionPipeline pipeline = new IngestionPipeline(transcriber, summarizer);
-        await pipeline.ProcessLocalAudioFilesAsync(session, audioAssets, paths, cancellationToken);
+        await pipeline.ProcessLocalAudioFilesAsync(
+            session,
+            audioAssets,
+            paths,
+            new IngestionProcessingOptions(),
+            cancellationToken);
     }
 }

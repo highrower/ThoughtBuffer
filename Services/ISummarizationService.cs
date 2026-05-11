@@ -1,8 +1,11 @@
-using System;
+using ThoughtBuffer.Models;
 
 namespace ThoughtBuffer.Services;
 
 public interface ISummarizationService
 {
-    Task<Models.SummaryResult> SummarizeAsync(string transcript, CancellationToken cancellationToken = default);
+    Task<SummaryResult> SummarizeAsync(
+        string transcript,
+        SummarizationProfile profile = SummarizationProfile.ThoughtNote,
+        CancellationToken cancellationToken = default);
 }

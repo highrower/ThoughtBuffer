@@ -15,11 +15,13 @@ public sealed class IngestionPipeline(
         IngestionSession session,
         IReadOnlyList<AudioAsset> audioAssets,
         AppPaths paths,
+        IngestionProcessingOptions? processingOptions = null,
         CancellationToken cancellationToken = default)
     {
         if (session.Mode != IngestionMode.AudioFile)
             throw new InvalidOperationException("Local audio processing requires an audio file ingestion session.");
 
+        processingOptions ??= new IngestionProcessingOptions();
         var imported = audioAssets
             .Select(asset => new RecordingEntry(
                 asset.FileName,
@@ -59,12 +61,20 @@ public sealed class IngestionPipeline(
             Console.WriteLine($"Size: {fileInfo.Length / (1024.0 * 1024.0):F2} MB");
 
             var transcript = await transcriber.TranscribeAsync(audioPath, cancellationToken);
-            Console.WriteLine($"Transcript for {entry.FileName}:");
-            Console.WriteLine(transcript);
+            Console.WriteLine($"Transcript generated for {entry.FileName}.");
 
-            var summary = await summarizer.SummarizeAsync(transcript, cancellationToken);
+            SummaryResult? summary = null;
+            string? markdown = null;
+            if (processingOptions.ProcessingMode == ProcessingMode.TranscribeAndSummarize)
+            {
+                summary = await summarizer.SummarizeAsync(
+                    transcript,
+                    processingOptions.SummarizationProfile,
+                    cancellationToken);
 
-            var markdown = MarkdownNoteBuilder.Build(entry, summary, transcript);
+                markdown = MarkdownNoteBuilder.Build(entry, summary, transcript);
+            }
+
             ArtifactWriteResult? audioArtifact = null;
             ArtifactWriteResult? transcriptArtifact = null;
             ArtifactWriteResult? noteArtifact = null;
@@ -72,7 +82,8 @@ public sealed class IngestionPipeline(
             if (artifactStorage is null)
             {
                 await File.WriteAllTextAsync(transcriptPath, transcript, cancellationToken);
-                await File.WriteAllTextAsync(notePath, markdown, cancellationToken);
+                if (markdown is not null)
+                    await File.WriteAllTextAsync(notePath, markdown, cancellationToken);
             }
             else
             {
@@ -88,17 +99,20 @@ public sealed class IngestionPipeline(
                     transcript,
                     cancellationToken);
 
-                noteArtifact = await artifactStorage.SaveTextAsync(
-                    ArtifactKind.Note,
-                    $"{sessionArtifactRoot}/notes/{outputBaseName}.md",
-                    markdown,
-                    cancellationToken);
+                if (markdown is not null)
+                {
+                    noteArtifact = await artifactStorage.SaveTextAsync(
+                        ArtifactKind.Note,
+                        $"{sessionArtifactRoot}/notes/{outputBaseName}.md",
+                        markdown,
+                        cancellationToken);
+                }
             }
 
             results.Add(new IngestionPipelineResult(
                 entry,
                 transcriptArtifact?.Path ?? transcriptPath,
-                noteArtifact?.Path ?? notePath,
+                noteArtifact?.Path ?? (markdown is null ? null : notePath),
                 new Transcript(
                     Guid.NewGuid().ToString("N"),
                     session.Id,
@@ -113,7 +127,14 @@ public sealed class IngestionPipeline(
             ));
         }
 
-        var json = JsonSerializer.Serialize(imported, new JsonSerializerOptions
+        var metadata = new
+        {
+            session,
+            processingOptions,
+            recordings = imported
+        };
+
+        var json = JsonSerializer.Serialize(metadata, new JsonSerializerOptions
         {
             WriteIndented = true,
         });

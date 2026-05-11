@@ -104,6 +104,12 @@ app.MapPost("/api/ingestions/audio", async (
 
     var form = await request.ReadFormAsync(cancellationToken);
     var file = form.Files.GetFile("file") ?? form.Files.FirstOrDefault();
+    var processingOptionsResult = ParseProcessingOptions(form, logger);
+
+    if (processingOptionsResult.Error is not null)
+        return Results.BadRequest(processingOptionsResult.Error);
+
+    var processingOptions = processingOptionsResult.Options;
 
     if (file is null || file.Length == 0)
     {
@@ -199,6 +205,7 @@ app.MapPost("/api/ingestions/audio", async (
             session,
             new[] { audioAsset },
             paths,
+            processingOptions,
             cancellationToken);
 
         logger.LogInformation(
@@ -210,6 +217,8 @@ app.MapPost("/api/ingestions/audio", async (
             session.Id,
             session.Source.ToString(),
             "completed",
+            processingOptions.ProcessingMode.ToString(),
+            processingOptions.SummarizationProfile.ToString(),
             results.Select(result => new AudioIngestionFileResult(
                 originalFileName,
                 result.Recording.FileName,
@@ -318,6 +327,56 @@ static ArtifactReferenceResponse? ToArtifactReference(ArtifactWriteResult? resul
             result.Uri?.ToString()
         );
 
+static ProcessingOptionsParseResult ParseProcessingOptions(IFormCollection form, ILogger logger)
+{
+    var processingModeValue = form["processingMode"].FirstOrDefault();
+    var summarizationProfileValue = form["summarizationProfile"].FirstOrDefault();
+
+    if (!TryParseEnumOrDefault(
+            processingModeValue,
+            ProcessingMode.TranscribeAndSummarize,
+            out ProcessingMode processingMode))
+    {
+        logger.LogWarning("Audio upload validation failed: unsupported processingMode {ProcessingMode}.", processingModeValue);
+        return new ProcessingOptionsParseResult(
+            new IngestionProcessingOptions(),
+            new ApiErrorResponse(
+                "Unsupported processingMode. Allowed values: TranscribeOnly, TranscribeAndSummarize.",
+                "invalid_processing_options"
+            ));
+    }
+
+    if (!TryParseEnumOrDefault(
+            summarizationProfileValue,
+            SummarizationProfile.ThoughtNote,
+            out SummarizationProfile summarizationProfile))
+    {
+        logger.LogWarning("Audio upload validation failed: unsupported summarizationProfile {SummarizationProfile}.", summarizationProfileValue);
+        return new ProcessingOptionsParseResult(
+            new IngestionProcessingOptions(),
+            new ApiErrorResponse(
+                "Unsupported summarizationProfile. Allowed values: ThoughtNote, SalesCall, SupportCall, IntakeCall.",
+                "invalid_processing_options"
+            ));
+    }
+
+    return new ProcessingOptionsParseResult(
+        new IngestionProcessingOptions(processingMode, summarizationProfile),
+        null);
+}
+
+static bool TryParseEnumOrDefault<TEnum>(string? value, TEnum defaultValue, out TEnum result)
+    where TEnum : struct, Enum
+{
+    if (string.IsNullOrWhiteSpace(value))
+    {
+        result = defaultValue;
+        return true;
+    }
+
+    return Enum.TryParse(value, ignoreCase: true, out result);
+}
+
 static string SanitizeFileName(string fileName)
 {
     var safeName = Path.GetFileName(fileName);
@@ -330,3 +389,8 @@ static string SanitizeFileName(string fileName)
         ? "audio-upload"
         : safeName;
 }
+
+record ProcessingOptionsParseResult(
+    IngestionProcessingOptions Options,
+    ApiErrorResponse? Error
+);
