@@ -6,9 +6,17 @@ namespace ThoughtBuffer.Services;
 public class OpenAiTranscriptionService : ITranscriptionService
 {
 	readonly HttpClient _httpClient;
+	readonly string     _model;
 
-	public OpenAiTranscriptionService(string apiKey)
+	public OpenAiTranscriptionService(string apiKey, string model = "gpt-4o-mini-transcribe")
 	{
+		if (string.IsNullOrWhiteSpace(apiKey))
+			throw new ArgumentException("API key is required.", nameof(apiKey));
+
+		if (string.IsNullOrWhiteSpace(model))
+			throw new ArgumentException("Transcription model is required.", nameof(model));
+
+		_model = model;
 		_httpClient = new HttpClient
 		{
 			Timeout = TimeSpan.FromMinutes(15)
@@ -26,8 +34,8 @@ public class OpenAiTranscriptionService : ITranscriptionService
 		using var       fileContent = new StreamContent(stream);
 		fileContent.Headers.ContentType = new MediaTypeHeaderValue("audio/mpeg");
 
-		form.Add(fileContent,                                 "file", Path.GetFileName(audioFilePath));
-		form.Add(new StringContent("gpt-4o-mini-transcribe"), "model");
+		form.Add(fileContent,                "file", Path.GetFileName(audioFilePath));
+		form.Add(new StringContent(_model), "model");
 
 		using var response = await _httpClient.PostAsync(
 								 "https://api.openai.com/v1/audio/transcriptions",

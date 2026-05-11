@@ -1,13 +1,27 @@
 using ThoughtBuffer.Application;
 using ThoughtBuffer.Models;
+using ThoughtBuffer.Options;
 using ThoughtBuffer.Services;
 
 var builder = WebApplication.CreateBuilder(args);
 
 builder.Services.AddEndpointsApiExplorer();
-builder.Services.AddSingleton(CreateApiPaths);
-builder.Services.AddScoped<ITranscriptionService>(_ => new OpenAiTranscriptionService(GetOpenAiApiKey()));
-builder.Services.AddScoped<ISummarizationService>(_ => new OpenAiSummarizationService(GetOpenAiApiKey()));
+builder.Services.AddSingleton(sp =>
+{
+    var options = builder.Configuration.GetLocalStorageOptions();
+
+    return CreateApiPaths(options);
+});
+builder.Services.AddScoped<ITranscriptionService>(_ =>
+{
+    var options = ResolveOpenAiOptions(builder.Configuration);
+    return new OpenAiTranscriptionService(options.ApiKey, options.TranscriptionModel);
+});
+builder.Services.AddScoped<ISummarizationService>(_ =>
+{
+    var options = ResolveOpenAiOptions(builder.Configuration);
+    return new OpenAiSummarizationService(options.ApiKey, options.SummarizationModel);
+});
 builder.Services.AddScoped<IIngestionPipeline, IngestionPipeline>();
 
 var app = builder.Build();
@@ -84,39 +98,34 @@ app.MapPost("/api/ingestions/audio", async (
 
 app.Run();
 
-static AppPaths CreateApiPaths(IServiceProvider _)
+static AppPaths CreateApiPaths(LocalStorageOptions options)
 {
-    var baseAppData = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
-    var appFolder = Path.Combine(baseAppData, "ThoughtBuffer", "Api");
-    var recordingsPath = Path.Combine(appFolder, "Uploads");
-    var copyFileFolder = Path.Combine(appFolder, "Uploads");
-    var filteredFolder = Path.Combine(appFolder, "Filtered");
-    var archivePath = Path.Combine(appFolder, "Archive");
-    var transcriptFolder = Path.Combine(appFolder, "Transcripts");
-    var notesFolder = Path.Combine(appFolder, "Notes");
+    var appPaths = options.ToAppPaths("Api");
 
-    Directory.CreateDirectory(appFolder);
-    Directory.CreateDirectory(recordingsPath);
-    Directory.CreateDirectory(copyFileFolder);
-    Directory.CreateDirectory(filteredFolder);
-    Directory.CreateDirectory(archivePath);
-    Directory.CreateDirectory(transcriptFolder);
-    Directory.CreateDirectory(notesFolder);
+    Directory.CreateDirectory(appPaths.appFolder);
+    Directory.CreateDirectory(appPaths.recordingsPath);
+    Directory.CreateDirectory(appPaths.copyFileFolder);
+    Directory.CreateDirectory(appPaths.filteredFolder);
+    Directory.CreateDirectory(appPaths.archivePath);
+    Directory.CreateDirectory(appPaths.transcriptFolder);
+    Directory.CreateDirectory(appPaths.notesFolder);
 
-    return new AppPaths(
-        appFolder,
-        recordingsPath,
-        copyFileFolder,
-        filteredFolder,
-        archivePath,
-        transcriptFolder,
-        notesFolder
-    );
+    return appPaths;
 }
 
-static string GetOpenAiApiKey() =>
-    Environment.GetEnvironmentVariable("THOUGHT_BUFFER_OPENAI_KEY")
-    ?? throw new InvalidOperationException("API key not found in environment variables.");
+static OpenAiOptions ResolveOpenAiOptions(IConfiguration configuration)
+{
+    var options = configuration
+        .GetOpenAiOptions();
+
+    if (string.IsNullOrWhiteSpace(options.ApiKey))
+        options.ApiKey = Environment.GetEnvironmentVariable("THOUGHT_BUFFER_OPENAI_KEY") ?? "";
+
+    if (string.IsNullOrWhiteSpace(options.ApiKey))
+        throw new InvalidOperationException("OpenAI API key not found. Set OpenAI:ApiKey or THOUGHT_BUFFER_OPENAI_KEY.");
+
+    return options;
+}
 
 public record AudioIngestionResponse(
     string SessionId,

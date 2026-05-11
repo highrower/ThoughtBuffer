@@ -7,12 +7,17 @@ namespace ThoughtBuffer.Services;
 public sealed class OpenAiSummarizationService : ISummarizationService
 {
     private readonly HttpClient _httpClient;
+    private readonly string _model;
 
-    public OpenAiSummarizationService(string apiKey)
+    public OpenAiSummarizationService(string apiKey, string model = "gpt-4.1-mini")
     {
         if (string.IsNullOrWhiteSpace(apiKey))
             throw new ArgumentException("API key is required.", nameof(apiKey));
 
+        if (string.IsNullOrWhiteSpace(model))
+            throw new ArgumentException("Summarization model is required.", nameof(model));
+
+        _model = model;
         _httpClient = new HttpClient
         {
             Timeout = TimeSpan.FromMinutes(15),
@@ -49,7 +54,7 @@ Transcript:
 
         var requestBody = new
         {
-            model = "gpt-4.1-mini",
+            model = _model,
             input = prompt,
             text = new
             {

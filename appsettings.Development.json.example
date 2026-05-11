@@ -1,0 +1,13 @@
+{
+  "ThoughtBuffer": {
+    "DevicePath": "E:\\REC_FILE",
+    "RecordingFolder": "FOLDER01",
+    "ArchiveFolder": "Archive",
+    "SolutionRoot": "G:\\Projects\\Dotnet\\ThoughtBuffer",
+    "PythonExePath": "G:\\Projects\\Dotnet\\ThoughtBuffer\\.venv\\Scripts\\python.exe",
+    "FilterScriptPath": "G:\\Projects\\Dotnet\\ThoughtBuffer\\python\\filter_audio.py"
+  },
+  "LocalStorage": {
+    "RootPath": "%LOCALAPPDATA%\\ThoughtBuffer\\Console"
+  }
+}
