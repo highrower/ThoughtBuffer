@@ -45,4 +45,16 @@ public static class ThoughtBufferConfiguration
                 : 25 * 1024 * 1024
         };
     }
+
+    public static ArtifactStorageOptions GetArtifactStorageOptions(this IConfiguration configuration)
+    {
+        var section = configuration.GetSection(ArtifactStorageOptions.SectionName);
+        return new ArtifactStorageOptions
+        {
+            Provider = section[nameof(ArtifactStorageOptions.Provider)] ?? "Local",
+            ContainerName = section[nameof(ArtifactStorageOptions.ContainerName)] ?? "thoughtbuffer-artifacts",
+            ConnectionString = section[nameof(ArtifactStorageOptions.ConnectionString)] ?? "",
+            LocalRootPath = section[nameof(ArtifactStorageOptions.LocalRootPath)] ?? ""
+        };
+    }
 }

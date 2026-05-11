@@ -3,6 +3,7 @@ using ThoughtBuffer.Application;
 using ThoughtBuffer.Models;
 using ThoughtBuffer.Options;
 using ThoughtBuffer.Services;
+using ThoughtBuffer.Storage;
 
 var allowedAudioExtensions = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
 {
@@ -19,6 +20,7 @@ var builder = WebApplication.CreateBuilder(args);
 
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSingleton(_ => CreateApiPaths(builder.Configuration.GetLocalStorageOptions()));
+builder.Services.AddSingleton(_ => CreateArtifactStorage(builder.Configuration));
 builder.Services.AddScoped<ITranscriptionService>(_ =>
 {
     var options = ResolveOpenAiOptions(builder.Configuration);
@@ -35,6 +37,7 @@ var app = builder.Build();
 var startupLogger = app.Services.GetRequiredService<ILoggerFactory>().CreateLogger("ThoughtBuffer.Api.Startup");
 var startupPaths = app.Services.GetRequiredService<AppPaths>();
 var startupStorageOptions = builder.Configuration.GetLocalStorageOptions();
+var startupArtifactOptions = builder.Configuration.GetArtifactStorageOptions();
 var startupOpenAiOptions = ResolveOpenAiOptionsWithoutThrowing(builder.Configuration);
 
 startupLogger.LogInformation(
@@ -49,7 +52,8 @@ if (string.IsNullOrWhiteSpace(startupOpenAiOptions.ApiKey))
 }
 
 startupLogger.LogInformation(
-    "Local filesystem storage is active at {StorageRoot}. This is temporary for hosted deployments until Blob Storage is introduced.",
+    "Artifact storage provider is {ArtifactStorageProvider}. Local temp storage root is {StorageRoot}.",
+    startupArtifactOptions.Provider,
     startupPaths.appFolder);
 
 app.MapGet("/", () => Results.Ok(new
@@ -67,12 +71,16 @@ app.MapGet("/api/config/status", (IWebHostEnvironment environment) =>
 {
     var openAiOptions = ResolveOpenAiOptionsWithoutThrowing(builder.Configuration);
     var storageOptions = builder.Configuration.GetLocalStorageOptions();
+    var artifactStorageOptions = builder.Configuration.GetArtifactStorageOptions();
 
     return Results.Ok(new ConfigStatusResponse(
         !string.IsNullOrWhiteSpace(openAiOptions.ApiKey),
         !string.IsNullOrWhiteSpace(storageOptions.RootPath),
         storageOptions.MaxUploadBytes,
-        environment.EnvironmentName
+        environment.EnvironmentName,
+        artifactStorageOptions.Provider,
+        IsArtifactStorageConfigured(artifactStorageOptions),
+        artifactStorageOptions.ContainerName
     ));
 });
 
@@ -207,8 +215,12 @@ app.MapPost("/api/ingestions/audio", async (
                 result.Recording.FileName,
                 result.Transcript?.Text,
                 result.Summary,
-                result.TranscriptPath,
-                result.NotePath
+                result.TranscriptArtifact?.Path ?? result.TranscriptPath,
+                result.NoteArtifact?.Path ?? result.NotePath,
+                ToArtifactReference(result.AudioArtifact),
+                ToArtifactReference(result.TranscriptArtifact),
+                ToArtifactReference(result.NoteArtifact),
+                ToArtifactReference(result.MetadataArtifact)
             )).ToList()
         ));
     }
@@ -270,6 +282,41 @@ static OpenAiOptions ResolveOpenAiOptionsWithoutThrowing(IConfiguration configur
 
     return options;
 }
+
+static IArtifactStorage CreateArtifactStorage(IConfiguration configuration)
+{
+    var options = configuration.GetArtifactStorageOptions();
+
+    if (options.Provider.Equals("AzureBlob", StringComparison.OrdinalIgnoreCase))
+        return new AzureBlobArtifactStorage(options.ConnectionString, options.ContainerName);
+
+    if (!options.Provider.Equals("Local", StringComparison.OrdinalIgnoreCase))
+        throw new InvalidOperationException($"Unsupported artifact storage provider: {options.Provider}");
+
+    return new LocalFileArtifactStorage(options.GetLocalRootPath("Api"));
+}
+
+static bool IsArtifactStorageConfigured(ArtifactStorageOptions options)
+{
+    if (options.Provider.Equals("AzureBlob", StringComparison.OrdinalIgnoreCase))
+        return !string.IsNullOrWhiteSpace(options.ConnectionString)
+               && !string.IsNullOrWhiteSpace(options.ContainerName);
+
+    if (options.Provider.Equals("Local", StringComparison.OrdinalIgnoreCase))
+        return true;
+
+    return false;
+}
+
+static ArtifactReferenceResponse? ToArtifactReference(ArtifactWriteResult? result) =>
+    result is null
+        ? null
+        : new ArtifactReferenceResponse(
+            result.Kind.ToString(),
+            result.StorageProvider,
+            result.Path,
+            result.Uri?.ToString()
+        );
 
 static string SanitizeFileName(string fileName)
 {

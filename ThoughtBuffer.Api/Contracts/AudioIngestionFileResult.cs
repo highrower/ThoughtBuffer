@@ -8,5 +8,9 @@ public record AudioIngestionFileResult(
     string? TranscriptText,
     SummaryResult? Summary,
     string? TranscriptArtifactPath,
-    string? NoteArtifactPath
+    string? NoteArtifactPath,
+    ArtifactReferenceResponse? AudioArtifact = null,
+    ArtifactReferenceResponse? TranscriptArtifact = null,
+    ArtifactReferenceResponse? NoteArtifact = null,
+    ArtifactReferenceResponse? MetadataArtifact = null
 );
