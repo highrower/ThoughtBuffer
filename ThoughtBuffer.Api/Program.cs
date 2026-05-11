@@ -201,11 +201,12 @@ app.MapPost("/api/ingestions/audio", async (
             fileInfo.Length);
 
         var pipeline = services.GetRequiredService<IIngestionPipeline>();
-        var results = await pipeline.ProcessLocalAudioFilesAsync(
-            session,
-            new[] { audioAsset },
-            paths,
-            processingOptions,
+        var results = await pipeline.ProcessBatchAudioAsync(
+            new BatchIngestionRequest(
+                session,
+                new[] { new BatchAudioInput(audioAsset) },
+                processingOptions
+            ),
             cancellationToken);
 
         logger.LogInformation(

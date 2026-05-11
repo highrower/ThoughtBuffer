@@ -11,6 +11,16 @@ public sealed class IngestionPipeline(
     ISummarizationService summarizer,
     IArtifactStorage? artifactStorage = null) : IIngestionPipeline
 {
+    public Task<IReadOnlyList<IngestionPipelineResult>> ProcessBatchAudioAsync(
+        BatchIngestionRequest request,
+        CancellationToken cancellationToken = default)
+    {
+        if (request.Session.Mode != IngestionMode.AudioFile)
+            throw new InvalidOperationException("Batch audio processing requires an audio file ingestion session.");
+
+        return ProcessBatchAudioCoreAsync(request, cancellationToken);
+    }
+
     public async Task<IReadOnlyList<IngestionPipelineResult>> ProcessLocalAudioFilesAsync(
         IngestionSession session,
         IReadOnlyList<AudioAsset> audioAssets,
@@ -18,20 +28,24 @@ public sealed class IngestionPipeline(
         IngestionProcessingOptions? processingOptions = null,
         CancellationToken cancellationToken = default)
     {
-        if (session.Mode != IngestionMode.AudioFile)
-            throw new InvalidOperationException("Local audio processing requires an audio file ingestion session.");
+        var request = new BatchIngestionRequest(
+            session,
+            audioAssets.Select(asset => new BatchAudioInput(asset)).ToList(),
+            processingOptions ?? new IngestionProcessingOptions(),
+            paths.transcriptFolder,
+            paths.notesFolder,
+            Path.Combine(paths.appFolder, "recordings.json")
+        );
 
-        processingOptions ??= new IngestionProcessingOptions();
-        var imported = audioAssets
-            .Select(asset => new RecordingEntry(
-                asset.FileName,
-                asset.OriginalPath,
-                asset.StoredPath,
-                asset.FilteredPath,
-                asset.SizeBytes,
-                asset.LastWriteTimeUtc,
-                asset.ImportedAtUtc
-            ))
+        return await ProcessBatchAudioAsync(request, cancellationToken);
+    }
+
+    async Task<IReadOnlyList<IngestionPipelineResult>> ProcessBatchAudioCoreAsync(
+        BatchIngestionRequest request,
+        CancellationToken cancellationToken)
+    {
+        var imported = request.AudioInputs
+            .Select(input => ToRecordingEntry(input.AudioAsset))
             .ToList();
         var results = new List<IngestionPipelineResult>();
 
@@ -45,11 +59,15 @@ public sealed class IngestionPipeline(
             var outputBaseName = Path.GetFileNameWithoutExtension(entry.FileName)
                 .Replace(".trimmed", "", StringComparison.OrdinalIgnoreCase);
 
-            var transcriptPath = Path.Combine(paths.transcriptFolder, $"{outputBaseName}.txt");
-            var notePath = Path.Combine(paths.notesFolder, $"{outputBaseName}.md");
-            var sessionArtifactRoot = $"sessions/{session.Id}";
+            var transcriptPath = request.LegacyTranscriptFolder is null
+                ? null
+                : Path.Combine(request.LegacyTranscriptFolder, $"{outputBaseName}.txt");
+            var notePath = request.LegacyNotesFolder is null
+                ? null
+                : Path.Combine(request.LegacyNotesFolder, $"{outputBaseName}.md");
+            var sessionArtifactRoot = $"sessions/{request.Session.Id}";
 
-            if (artifactStorage is null && File.Exists(transcriptPath) && File.Exists(notePath))
+            if (artifactStorage is null && transcriptPath is not null && notePath is not null && File.Exists(transcriptPath) && File.Exists(notePath))
             {
                 Console.WriteLine($"Skipping already transcribed/summarized file: {entry.FileName}");
                 results.Add(new IngestionPipelineResult(entry, transcriptPath, notePath, null, null));
@@ -65,11 +83,11 @@ public sealed class IngestionPipeline(
 
             SummaryResult? summary = null;
             string? markdown = null;
-            if (processingOptions.ProcessingMode == ProcessingMode.TranscribeAndSummarize)
+            if (request.ProcessingOptions.ProcessingMode == ProcessingMode.TranscribeAndSummarize)
             {
                 summary = await summarizer.SummarizeAsync(
                     transcript,
-                    processingOptions.SummarizationProfile,
+                    request.ProcessingOptions.SummarizationProfile,
                     cancellationToken);
 
                 markdown = MarkdownNoteBuilder.Build(entry, summary, transcript);
@@ -81,9 +99,17 @@ public sealed class IngestionPipeline(
 
             if (artifactStorage is null)
             {
+                if (transcriptPath is null)
+                    throw new InvalidOperationException("Legacy transcript path is required when artifact storage is not configured.");
+
                 await File.WriteAllTextAsync(transcriptPath, transcript, cancellationToken);
                 if (markdown is not null)
+                {
+                    if (notePath is null)
+                        throw new InvalidOperationException("Legacy note path is required when artifact storage is not configured.");
+
                     await File.WriteAllTextAsync(notePath, markdown, cancellationToken);
+                }
             }
             else
             {
@@ -115,7 +141,7 @@ public sealed class IngestionPipeline(
                 noteArtifact?.Path ?? (markdown is null ? null : notePath),
                 new Transcript(
                     Guid.NewGuid().ToString("N"),
-                    session.Id,
+                    request.Session.Id,
                     entry.FileName,
                     transcript,
                     DateTime.UtcNow
@@ -129,8 +155,8 @@ public sealed class IngestionPipeline(
 
         var metadata = new
         {
-            session,
-            processingOptions,
+            session = request.Session,
+            processingOptions = request.ProcessingOptions,
             recordings = imported
         };
 
@@ -139,16 +165,18 @@ public sealed class IngestionPipeline(
             WriteIndented = true,
         });
 
-        var jsonPath = Path.Combine(paths.appFolder, "recordings.json");
         if (artifactStorage is null)
         {
-            await File.WriteAllTextAsync(jsonPath, json, cancellationToken);
+            if (request.LegacyMetadataPath is null)
+                throw new InvalidOperationException("Legacy metadata path is required when artifact storage is not configured.");
+
+            await File.WriteAllTextAsync(request.LegacyMetadataPath, json, cancellationToken);
         }
         else
         {
             var metadataArtifact = await artifactStorage.SaveTextAsync(
                 ArtifactKind.Metadata,
-                $"sessions/{session.Id}/metadata/recording.json",
+                $"sessions/{request.Session.Id}/metadata/recording.json",
                 json,
                 cancellationToken);
 
@@ -159,4 +187,15 @@ public sealed class IngestionPipeline(
 
         return results;
     }
+
+    static RecordingEntry ToRecordingEntry(AudioAsset asset) =>
+        new(
+            asset.FileName,
+            asset.OriginalPath,
+            asset.StoredPath,
+            asset.FilteredPath,
+            asset.SizeBytes,
+            asset.LastWriteTimeUtc,
+            asset.ImportedAtUtc
+        );
 }
