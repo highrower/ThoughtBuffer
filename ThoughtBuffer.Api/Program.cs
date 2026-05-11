@@ -1,5 +1,6 @@
 using ThoughtBuffer.Api.Contracts;
 using ThoughtBuffer.Application;
+using ThoughtBuffer.Integrations.Twilio;
 using ThoughtBuffer.Models;
 using ThoughtBuffer.Options;
 using ThoughtBuffer.Services;
@@ -21,6 +22,9 @@ var builder = WebApplication.CreateBuilder(args);
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSingleton(_ => CreateApiPaths(builder.Configuration.GetLocalStorageOptions()));
 builder.Services.AddSingleton(_ => CreateArtifactStorage(builder.Configuration));
+builder.Services.AddSingleton(_ => builder.Configuration.GetTwilioOptions());
+builder.Services.AddSingleton<TwilioSignatureValidator>();
+builder.Services.AddSingleton<TwilioRecordingIngestionService>();
 builder.Services.AddScoped<ITranscriptionService>(_ =>
 {
     var options = ResolveOpenAiOptions(builder.Configuration);
@@ -59,7 +63,7 @@ startupLogger.LogInformation(
 app.MapGet("/", () => Results.Ok(new
 {
     name = "ThoughtBuffer.Api",
-    endpoints = new[] { "GET /health", "GET /api/config/status", "POST /api/ingestions/audio" }
+    endpoints = new[] { "GET /health", "GET /api/config/status", "POST /api/ingestions/audio", "POST /api/twilio/recording-status" }
 }));
 
 app.MapGet("/health", () => Results.Ok(new
@@ -256,6 +260,77 @@ app.MapPost("/api/ingestions/audio", async (
     }
 });
 
+app.MapPost("/api/twilio/recording-status", async (
+    HttpRequest request,
+    TwilioOptions twilioOptions,
+    TwilioSignatureValidator signatureValidator,
+    TwilioRecordingIngestionService ingestionService,
+    ILogger<Program> logger,
+    CancellationToken cancellationToken) =>
+{
+    if (!request.HasFormContentType)
+    {
+        logger.LogWarning("Twilio recording webhook rejected: content type was not form data.");
+        return Results.BadRequest(new ApiErrorResponse(
+            "Expected application/x-www-form-urlencoded form data.",
+            "invalid_request"
+        ));
+    }
+
+    var form = await request.ReadFormAsync(cancellationToken);
+
+    if (twilioOptions.ValidateSignatures)
+    {
+        var requestUri = BuildPublicRequestUri(request);
+        if (!signatureValidator.IsValid(requestUri, ToSignatureFormData(form), request.Headers["X-Twilio-Signature"].FirstOrDefault()))
+        {
+            logger.LogWarning("Twilio recording webhook rejected: invalid signature.");
+            return Results.Json(
+                new ApiErrorResponse("Invalid Twilio signature.", "invalid_signature"),
+                statusCode: StatusCodes.Status403Forbidden);
+        }
+    }
+
+    var webhook = new TwilioRecordingWebhookRequest(
+        GetRequiredFormValue(form, "CallSid"),
+        GetRequiredFormValue(form, "RecordingSid"),
+        GetRequiredFormValue(form, "RecordingUrl"),
+        GetRequiredFormValue(form, "RecordingStatus"),
+        form["AccountSid"].FirstOrDefault(),
+        form["RecordingDuration"].FirstOrDefault(),
+        form["RecordingChannels"].FirstOrDefault(),
+        form["RecordingSource"].FirstOrDefault()
+    );
+
+    var missingFields = GetMissingRequiredTwilioFields(webhook).ToList();
+    if (missingFields.Count > 0)
+    {
+        logger.LogWarning("Twilio recording webhook rejected: missing fields {MissingFields}.", string.Join(",", missingFields));
+        return Results.BadRequest(new ApiErrorResponse(
+            $"Missing required Twilio recording fields: {string.Join(", ", missingFields)}.",
+            "invalid_request"
+        ));
+    }
+
+    var result = ingestionService.Inspect(webhook);
+    logger.LogInformation(
+        "Twilio recording webhook {Status}. CallSid: {CallSid}. RecordingSid: {RecordingSid}. RecordingStatus: {RecordingStatus}.",
+        result.Status,
+        webhook.CallSid,
+        webhook.RecordingSid,
+        webhook.RecordingStatus);
+
+    return Results.Ok(new
+    {
+        result.Status,
+        result.Message,
+        SessionId = result.Session?.Id,
+        ExternalId = result.Session?.ExternalId,
+        ProcessingMode = result.ProcessingMode.ToString(),
+        SummarizationProfile = result.SummarizationProfile.ToString()
+    });
+});
+
 app.Run();
 
 static AppPaths CreateApiPaths(LocalStorageOptions options)
@@ -377,6 +452,37 @@ static bool TryParseEnumOrDefault<TEnum>(string? value, TEnum defaultValue, out 
 
     return Enum.TryParse(value, ignoreCase: true, out result);
 }
+
+static string GetRequiredFormValue(IFormCollection form, string key) =>
+    form[key].FirstOrDefault() ?? "";
+
+static IEnumerable<string> GetMissingRequiredTwilioFields(TwilioRecordingWebhookRequest request)
+{
+    if (string.IsNullOrWhiteSpace(request.CallSid))
+        yield return nameof(request.CallSid);
+
+    if (string.IsNullOrWhiteSpace(request.RecordingSid))
+        yield return nameof(request.RecordingSid);
+
+    if (string.IsNullOrWhiteSpace(request.RecordingUrl))
+        yield return nameof(request.RecordingUrl);
+
+    if (string.IsNullOrWhiteSpace(request.RecordingStatus))
+        yield return nameof(request.RecordingStatus);
+}
+
+static Uri BuildPublicRequestUri(HttpRequest request)
+{
+    var scheme = request.Headers["X-Forwarded-Proto"].FirstOrDefault() ?? request.Scheme;
+    var host = request.Headers["X-Forwarded-Host"].FirstOrDefault() ?? request.Host.Value;
+    return new Uri($"{scheme}://{host}{request.Path}{request.QueryString}");
+}
+
+static IReadOnlyDictionary<string, IReadOnlyList<string>> ToSignatureFormData(IFormCollection form) =>
+    form.ToDictionary(
+        pair => pair.Key,
+        pair => (IReadOnlyList<string>)pair.Value.Select(value => value ?? "").ToArray(),
+        StringComparer.Ordinal);
 
 static string SanitizeFileName(string fileName)
 {

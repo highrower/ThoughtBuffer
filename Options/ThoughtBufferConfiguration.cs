@@ -1,4 +1,6 @@
 using Microsoft.Extensions.Configuration;
+using ThoughtBuffer.Integrations.Twilio;
+using ThoughtBuffer.Models;
 
 namespace ThoughtBuffer.Options;
 
@@ -55,6 +57,31 @@ public static class ThoughtBufferConfiguration
             ContainerName = section[nameof(ArtifactStorageOptions.ContainerName)] ?? "thoughtbuffer-artifacts",
             ConnectionString = section[nameof(ArtifactStorageOptions.ConnectionString)] ?? "",
             LocalRootPath = section[nameof(ArtifactStorageOptions.LocalRootPath)] ?? ""
+        };
+    }
+
+    public static TwilioOptions GetTwilioOptions(this IConfiguration configuration)
+    {
+        var section = configuration.GetSection(TwilioOptions.SectionName);
+        return new TwilioOptions
+        {
+            AccountSid = section[nameof(TwilioOptions.AccountSid)] ?? "",
+            AuthToken = section[nameof(TwilioOptions.AuthToken)] ?? "",
+            ValidateSignatures = bool.TryParse(section[nameof(TwilioOptions.ValidateSignatures)], out var validate)
+                ? validate
+                : true,
+            DefaultProcessingMode = Enum.TryParse(
+                section[nameof(TwilioOptions.DefaultProcessingMode)],
+                ignoreCase: true,
+                out ProcessingMode mode)
+                ? mode
+                : ProcessingMode.TranscribeAndSummarize,
+            DefaultSummarizationProfile = Enum.TryParse(
+                section[nameof(TwilioOptions.DefaultSummarizationProfile)],
+                ignoreCase: true,
+                out SummarizationProfile profile)
+                ? profile
+                : SummarizationProfile.IntakeCall
         };
     }
 }

@@ -14,5 +14,10 @@
   "ArtifactStorage": {
     "Provider": "Local",
     "LocalRootPath": "%LOCALAPPDATA%\\ThoughtBuffer\\Console\\Artifacts"
+  },
+  "Twilio": {
+    "ValidateSignatures": false,
+    "DefaultProcessingMode": "TranscribeAndSummarize",
+    "DefaultSummarizationProfile": "IntakeCall"
   }
 }
