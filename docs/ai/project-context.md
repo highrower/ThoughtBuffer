@@ -98,3 +98,39 @@ The app should evolve from:
 Local recorder CLI → generic ingestion pipeline → ASP.NET API → Azure-hosted API/worker → Twilio integrations.
 
 Do not over-optimize the console app. Refactor it only enough to keep current behavior working while the API becomes the real entrypoint.
+
+## Future Direction: Call Ingestion
+
+ThoughtBuffer is evolving into a generic ingestion system for audio/text sessions.
+
+The current manual upload endpoint is only the first source adapter. Future sources include:
+- Twilio post-call recordings
+- Twilio live media streams
+- Browser uploads
+- Local recorder ingestion
+- Potential future voice/message integrations
+
+The core domain should remain source-agnostic:
+- IngestionSession is the center.
+- SourceSystem identifies where content came from.
+- AudioAsset / Transcript / Summary / Note are artifacts of a session.
+- Twilio-specific behavior must stay in Twilio integration code, not the core pipeline.
+
+Call ingestion will eventually support two-party conversations. The system should prepare for:
+- caller/callee or customer/agent roles
+- multi-channel or speaker-separated transcripts
+- configurable summarization strategies
+- optional summarization
+- live transcription later
+- batch transcription now
+
+Do not assume every ingestion needs the same summary prompt.
+Do not bake “thought note” summarization into the pipeline as the only mode.
+The pipeline should allow processing options such as:
+- transcribeOnly
+- transcribeAndSummarize
+- summarizationProfile
+- sourceSystem
+- externalId, such as Twilio CallSid or RecordingSid
+
+For now, Blob Storage is the next step. SQL/Entity Framework is intentionally deferred until we need queryable call/customer metadata.
