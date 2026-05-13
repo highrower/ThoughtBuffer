@@ -9,6 +9,7 @@
   },
   "Twilio": {
     "ValidateSignatures": false,
+    "ForwardToPhoneNumber": "+15555550100",
     "DefaultProcessingMode": "TranscribeAndSummarize",
     "DefaultSummarizationProfile": "IntakeCall"
   }

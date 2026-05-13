@@ -5,6 +5,7 @@ using ThoughtBuffer.Models;
 using ThoughtBuffer.Options;
 using ThoughtBuffer.Services;
 using ThoughtBuffer.Storage;
+using System.Security;
 
 var allowedAudioExtensions = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
 {
@@ -63,7 +64,7 @@ startupLogger.LogInformation(
 app.MapGet("/", () => Results.Ok(new
 {
     name = "ThoughtBuffer.Api",
-    endpoints = new[] { "GET /health", "GET /api/config/status", "POST /api/ingestions/audio", "POST /api/twilio/recording-status" }
+    endpoints = new[] { "GET /health", "GET /api/config/status", "POST /api/ingestions/audio", "POST /api/twilio/voice", "POST /api/twilio/recording-status" }
 }));
 
 app.MapGet("/health", () => Results.Ok(new
@@ -258,6 +259,42 @@ app.MapPost("/api/ingestions/audio", async (
             ),
             statusCode: StatusCodes.Status500InternalServerError);
     }
+});
+
+app.MapPost("/api/twilio/voice", async (
+    HttpRequest request,
+    TwilioOptions twilioOptions,
+    TwilioSignatureValidator signatureValidator,
+    ILogger<Program> logger,
+    CancellationToken cancellationToken) =>
+{
+    if (twilioOptions.ValidateSignatures)
+    {
+        if (!request.HasFormContentType)
+        {
+            logger.LogWarning("Twilio voice webhook rejected: content type was not form data.");
+            return Results.BadRequest(new ApiErrorResponse(
+                "Expected application/x-www-form-urlencoded form data.",
+                "invalid_request"
+            ));
+        }
+
+        var form = await request.ReadFormAsync(cancellationToken);
+        var requestUri = BuildPublicRequestUri(request);
+        if (!signatureValidator.IsValid(requestUri, ToSignatureFormData(form), request.Headers["X-Twilio-Signature"].FirstOrDefault()))
+        {
+            logger.LogWarning("Twilio voice webhook rejected: invalid signature.");
+            return Results.Json(
+                new ApiErrorResponse("Invalid Twilio signature.", "invalid_signature"),
+                statusCode: StatusCodes.Status403Forbidden);
+        }
+    }
+
+    var recordingStatusCallback = BuildEndpointUri(request, "/api/twilio/recording-status");
+    var twiml = BuildVoiceTwiML(twilioOptions.ForwardToPhoneNumber, recordingStatusCallback);
+
+    logger.LogInformation("Twilio voice webhook returned TwiML.");
+    return Results.Text(twiml, "application/xml");
 });
 
 app.MapPost("/api/twilio/recording-status", async (
@@ -476,6 +513,40 @@ static Uri BuildPublicRequestUri(HttpRequest request)
     var scheme = request.Headers["X-Forwarded-Proto"].FirstOrDefault() ?? request.Scheme;
     var host = request.Headers["X-Forwarded-Host"].FirstOrDefault() ?? request.Host.Value;
     return new Uri($"{scheme}://{host}{request.Path}{request.QueryString}");
+}
+
+static Uri BuildEndpointUri(HttpRequest request, string path)
+{
+    var scheme = request.Headers["X-Forwarded-Proto"].FirstOrDefault() ?? request.Scheme;
+    var host = request.Headers["X-Forwarded-Host"].FirstOrDefault() ?? request.Host.Value;
+    return new Uri($"{scheme}://{host}{path}");
+}
+
+static string BuildVoiceTwiML(string forwardToPhoneNumber, Uri recordingStatusCallback)
+{
+    if (string.IsNullOrWhiteSpace(forwardToPhoneNumber))
+    {
+        return """
+<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+  <Say>Thought Buffer call forwarding is not configured.</Say>
+  <Hangup />
+</Response>
+""";
+    }
+
+    var escapedNumber = SecurityElement.Escape(forwardToPhoneNumber);
+    var escapedCallback = SecurityElement.Escape(recordingStatusCallback.ToString());
+
+    return $"""
+<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+  <Say>This call may be recorded for transcription and follow up.</Say>
+  <Dial record="record-from-answer-dual" recordingStatusCallback="{escapedCallback}" recordingStatusCallbackEvent="completed">
+    <Number>{escapedNumber}</Number>
+  </Dial>
+</Response>
+""";
 }
 
 static IReadOnlyDictionary<string, IReadOnlyList<string>> ToSignatureFormData(IFormCollection form) =>

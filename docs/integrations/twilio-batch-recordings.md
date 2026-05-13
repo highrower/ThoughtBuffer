@@ -1,10 +1,16 @@
-# Twilio Batch Recording Webhook
+# Twilio Batch Call Recording
 
-This phase adds the first Twilio source adapter skeleton. It does not download recordings or process calls yet.
+This phase adds the first Twilio source adapter skeleton. It can answer a Twilio voice webhook with TwiML that forwards a call and enables call recording. It does not download recordings or process calls yet.
 
-## Webhook URL
+## Webhook URLs
 
-Use this URL for Twilio recording status callbacks:
+Voice webhook:
+
+```text
+https://thoughtbuffer-api-jairo-dev-62217.azurewebsites.net/api/twilio/voice
+```
+
+Recording status callback:
 
 ```text
 https://thoughtbuffer-api-jairo-dev-62217.azurewebsites.net/api/twilio/recording-status
@@ -12,7 +18,26 @@ https://thoughtbuffer-api-jairo-dev-62217.azurewebsites.net/api/twilio/recording
 
 ## Twilio Setup Overview
 
-In Twilio, configure a recording status callback for completed call recordings. The callback should send form-encoded fields such as:
+In Twilio Console:
+
+1. Buy or choose a Twilio phone number.
+2. Open the number configuration.
+3. Under voice incoming calls, set webhook method to `POST`.
+4. Set the voice webhook URL to:
+
+```text
+https://thoughtbuffer-api-jairo-dev-62217.azurewebsites.net/api/twilio/voice
+```
+
+The voice endpoint returns TwiML that:
+
+- says a short recording notice
+- dials `Twilio__ForwardToPhoneNumber`
+- enables recording on the dial
+- sets `recordingStatusCallback` to `/api/twilio/recording-status`
+- requests `recordingStatusCallbackEvent=completed`
+
+Twilio will later call the recording status callback with form-encoded fields such as:
 
 ```text
 CallSid
@@ -27,6 +52,7 @@ RecordingSource
 
 The API currently:
 
+- returns TwiML for inbound calls
 - accepts Twilio recording status callbacks
 - validates required fields
 - optionally validates `X-Twilio-Signature`
@@ -43,6 +69,7 @@ Configure these under App Service application settings:
 Twilio__AccountSid=<your Twilio account SID>
 Twilio__AuthToken=<your Twilio auth token>
 Twilio__ValidateSignatures=true
+Twilio__ForwardToPhoneNumber=<phone number to forward calls to>
 Twilio__DefaultProcessingMode=TranscribeAndSummarize
 Twilio__DefaultSummarizationProfile=IntakeCall
 ```

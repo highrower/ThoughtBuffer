@@ -70,6 +70,7 @@ public static class ThoughtBufferConfiguration
             ValidateSignatures = bool.TryParse(section[nameof(TwilioOptions.ValidateSignatures)], out var validate)
                 ? validate
                 : true,
+            ForwardToPhoneNumber = section[nameof(TwilioOptions.ForwardToPhoneNumber)] ?? "",
             DefaultProcessingMode = Enum.TryParse(
                 section[nameof(TwilioOptions.DefaultProcessingMode)],
                 ignoreCase: true,
