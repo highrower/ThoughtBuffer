@@ -25,7 +25,7 @@ builder.Services.AddSingleton(_ => CreateApiPaths(builder.Configuration.GetLocal
 builder.Services.AddSingleton(_ => CreateArtifactStorage(builder.Configuration));
 builder.Services.AddSingleton(_ => builder.Configuration.GetTwilioOptions());
 builder.Services.AddSingleton<TwilioSignatureValidator>();
-builder.Services.AddSingleton<TwilioRecordingIngestionService>();
+builder.Services.AddScoped<TwilioRecordingIngestionService>();
 builder.Services.AddScoped<ITranscriptionService>(_ =>
 {
     var options = ResolveOpenAiOptions(builder.Configuration);
@@ -349,23 +349,79 @@ app.MapPost("/api/twilio/recording-status", async (
         ));
     }
 
-    var result = ingestionService.Inspect(webhook);
-    logger.LogInformation(
-        "Twilio recording webhook {Status}. CallSid: {CallSid}. RecordingSid: {RecordingSid}. RecordingStatus: {RecordingStatus}.",
-        result.Status,
-        webhook.CallSid,
-        webhook.RecordingSid,
-        webhook.RecordingStatus);
-
-    return Results.Ok(new
+    try
     {
-        result.Status,
-        result.Message,
-        SessionId = result.Session?.Id,
-        ExternalId = result.Session?.ExternalId,
-        ProcessingMode = result.ProcessingMode.ToString(),
-        SummarizationProfile = result.SummarizationProfile.ToString()
-    });
+        var result = await ingestionService.IngestAsync(webhook, cancellationToken);
+        logger.LogInformation(
+            "Twilio recording webhook {Status}. CallSid: {CallSid}. RecordingSid: {RecordingSid}. RecordingStatus: {RecordingStatus}.",
+            result.Status,
+            webhook.CallSid,
+            webhook.RecordingSid,
+            webhook.RecordingStatus);
+
+        return Results.Ok(new
+        {
+            status = result.Status,
+            message = result.Message,
+            sessionId = result.Session?.Id,
+            callSid = webhook.CallSid,
+            recordingSid = webhook.RecordingSid,
+            externalId = result.Session?.ExternalId,
+            processingMode = result.ProcessingMode.ToString(),
+            summarizationProfile = result.SummarizationProfile.ToString(),
+            artifacts = result.PipelineResults is null
+                ? Array.Empty<ArtifactReferenceResponse>()
+                : result.PipelineResults.SelectMany(ToArtifactReferences).ToArray()
+        });
+    }
+    catch (TwilioRecordingIngestionException ex)
+    {
+        logger.LogWarning(
+            ex,
+            "Twilio recording webhook failed. CallSid: {CallSid}. RecordingSid: {RecordingSid}. ErrorCode: {ErrorCode}. DownloadStatusCode: {DownloadStatusCode}.",
+            webhook.CallSid,
+            webhook.RecordingSid,
+            ex.ErrorCode,
+            ex.DownloadStatusCode);
+
+        return Results.Json(
+            new
+            {
+                status = "failed",
+                error = ex.Message,
+                errorCode = ex.ErrorCode,
+                sessionId = (string?)null,
+                callSid = webhook.CallSid,
+                recordingSid = webhook.RecordingSid,
+                processingMode = twilioOptions.DefaultProcessingMode.ToString(),
+                summarizationProfile = twilioOptions.DefaultSummarizationProfile.ToString(),
+                artifacts = Array.Empty<ArtifactReferenceResponse>()
+            },
+            statusCode: StatusCodes.Status502BadGateway);
+    }
+    catch (InvalidOperationException ex)
+    {
+        logger.LogError(
+            ex,
+            "Twilio recording ingestion failed. CallSid: {CallSid}. RecordingSid: {RecordingSid}.",
+            webhook.CallSid,
+            webhook.RecordingSid);
+
+        return Results.Json(
+            new
+            {
+                status = "failed",
+                error = "The Twilio recording could not be processed. Check API configuration and service availability.",
+                errorCode = "ingestion_failed",
+                sessionId = (string?)null,
+                callSid = webhook.CallSid,
+                recordingSid = webhook.RecordingSid,
+                processingMode = twilioOptions.DefaultProcessingMode.ToString(),
+                summarizationProfile = twilioOptions.DefaultSummarizationProfile.ToString(),
+                artifacts = Array.Empty<ArtifactReferenceResponse>()
+            },
+            statusCode: StatusCodes.Status500InternalServerError);
+    }
 });
 
 app.Run();
@@ -439,6 +495,19 @@ static ArtifactReferenceResponse? ToArtifactReference(ArtifactWriteResult? resul
             result.Path,
             result.Uri?.ToString()
         );
+
+static IEnumerable<ArtifactReferenceResponse> ToArtifactReferences(IngestionPipelineResult result)
+{
+    var artifacts = new[]
+    {
+        ToArtifactReference(result.AudioArtifact),
+        ToArtifactReference(result.TranscriptArtifact),
+        ToArtifactReference(result.NoteArtifact),
+        ToArtifactReference(result.MetadataArtifact)
+    };
+
+    return artifacts.Where(artifact => artifact is not null)!;
+}
 
 static ProcessingOptionsParseResult ParseProcessingOptions(IFormCollection form, ILogger logger)
 {
