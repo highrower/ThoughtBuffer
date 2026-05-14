@@ -6,6 +6,7 @@ using ThoughtBuffer.Options;
 using ThoughtBuffer.Services;
 using ThoughtBuffer.Storage;
 using System.Security;
+using System.Net.WebSockets;
 
 var allowedAudioExtensions = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
 {
@@ -26,6 +27,7 @@ builder.Services.AddSingleton(_ => CreateArtifactStorage(builder.Configuration))
 builder.Services.AddSingleton(_ => builder.Configuration.GetTwilioOptions());
 builder.Services.AddSingleton<TwilioSignatureValidator>();
 builder.Services.AddScoped<TwilioRecordingIngestionService>();
+builder.Services.AddScoped<TwilioMediaStreamIngestionService>();
 builder.Services.AddScoped<ITranscriptionService>(_ =>
 {
     var options = ResolveOpenAiOptions(builder.Configuration);
@@ -39,6 +41,7 @@ builder.Services.AddScoped<ISummarizationService>(_ =>
 builder.Services.AddScoped<IIngestionPipeline, IngestionPipeline>();
 
 var app = builder.Build();
+app.UseWebSockets();
 var startupLogger = app.Services.GetRequiredService<ILoggerFactory>().CreateLogger("ThoughtBuffer.Api.Startup");
 var startupPaths = app.Services.GetRequiredService<AppPaths>();
 var startupStorageOptions = builder.Configuration.GetLocalStorageOptions();
@@ -64,7 +67,7 @@ startupLogger.LogInformation(
 app.MapGet("/", () => Results.Ok(new
 {
     name = "ThoughtBuffer.Api",
-    endpoints = new[] { "GET /health", "GET /api/config/status", "POST /api/ingestions/audio", "POST /api/twilio/voice", "POST /api/twilio/recording-status" }
+    endpoints = new[] { "GET /health", "GET /api/config/status", "POST /api/ingestions/audio", "POST /api/twilio/voice", "POST /api/twilio/recording-status", "GET /api/twilio/media-stream" }
 }));
 
 app.MapGet("/health", () => Results.Ok(new
@@ -268,6 +271,11 @@ app.MapPost("/api/twilio/voice", async (
     ILogger<Program> logger,
     CancellationToken cancellationToken) =>
 {
+    logger.LogInformation(
+        "Twilio voice webhook received. Path: {Path}. ValidateSignatures: {ValidateSignatures}.",
+        request.Path,
+        twilioOptions.ValidateSignatures);
+
     if (twilioOptions.ValidateSignatures)
     {
         if (!request.HasFormContentType)
@@ -291,10 +299,50 @@ app.MapPost("/api/twilio/voice", async (
     }
 
     var recordingStatusCallback = BuildEndpointUri(request, "/api/twilio/recording-status");
-    var twiml = BuildVoiceTwiML(twilioOptions.ForwardToPhoneNumber, recordingStatusCallback);
+    var mediaStreamUri = BuildWebSocketEndpointUri(request, "/api/twilio/media-stream");
+    var twiml = BuildVoiceTwiML(twilioOptions, recordingStatusCallback, mediaStreamUri);
 
     logger.LogInformation("Twilio voice webhook returned TwiML.");
     return Results.Text(twiml, "application/xml");
+});
+
+app.MapGet("/api/twilio/media-stream", async (
+    HttpContext context,
+    TwilioMediaStreamIngestionService mediaStreamIngestionService,
+    ILogger<Program> logger,
+    CancellationToken cancellationToken) =>
+{
+    if (!context.WebSockets.IsWebSocketRequest)
+    {
+        logger.LogWarning("Twilio media stream endpoint rejected non-WebSocket request.");
+        context.Response.StatusCode = StatusCodes.Status400BadRequest;
+        await context.Response.WriteAsJsonAsync(
+            new ApiErrorResponse(
+                "Expected a Twilio Media Streams WebSocket upgrade request.",
+                "websocket_required"),
+            cancellationToken);
+        return;
+    }
+
+    using var webSocket = await context.WebSockets.AcceptWebSocketAsync();
+    TwilioMediaStreamResult result;
+    try
+    {
+        result = await mediaStreamIngestionService.ProcessAsync(webSocket, cancellationToken);
+    }
+    catch (WebSocketException ex)
+    {
+        logger.LogWarning(ex, "Twilio media stream WebSocket failed.");
+        return;
+    }
+
+    logger.LogInformation(
+        "Twilio media stream request completed. SessionId: {SessionId}. StreamSid: {StreamSid}. CallSid: {CallSid}. FinalizationStatus: {FinalizationStatus}. MetadataArtifactPath: {MetadataArtifactPath}.",
+        result.SessionId,
+        result.StreamSid,
+        result.CallSid,
+        result.FinalizationStatus,
+        result.MetadataArtifactPath);
 });
 
 app.MapPost("/api/twilio/recording-status", async (
@@ -338,6 +386,12 @@ app.MapPost("/api/twilio/recording-status", async (
         form["RecordingChannels"].FirstOrDefault(),
         form["RecordingSource"].FirstOrDefault()
     );
+
+    logger.LogInformation(
+        "Twilio recording callback received. CallSid: {CallSid}. RecordingSid: {RecordingSid}. RecordingStatus: {RecordingStatus}.",
+        webhook.CallSid,
+        webhook.RecordingSid,
+        webhook.RecordingStatus);
 
     var missingFields = GetMissingRequiredTwilioFields(webhook).ToList();
     if (missingFields.Count > 0)
@@ -591,9 +645,20 @@ static Uri BuildEndpointUri(HttpRequest request, string path)
     return new Uri($"{scheme}://{host}{path}");
 }
 
-static string BuildVoiceTwiML(string forwardToPhoneNumber, Uri recordingStatusCallback)
+static Uri BuildWebSocketEndpointUri(HttpRequest request, string path)
 {
-    if (string.IsNullOrWhiteSpace(forwardToPhoneNumber))
+    var scheme = request.Headers["X-Forwarded-Proto"].FirstOrDefault() ?? request.Scheme;
+    var host = request.Headers["X-Forwarded-Host"].FirstOrDefault() ?? request.Host.Value;
+    var webSocketScheme = scheme.Equals("https", StringComparison.OrdinalIgnoreCase)
+        ? "wss"
+        : "ws";
+
+    return new Uri($"{webSocketScheme}://{host}{path}");
+}
+
+static string BuildVoiceTwiML(TwilioOptions twilioOptions, Uri recordingStatusCallback, Uri mediaStreamUri)
+{
+    if (string.IsNullOrWhiteSpace(twilioOptions.ForwardToPhoneNumber))
     {
         return """
 <?xml version="1.0" encoding="UTF-8"?>
@@ -604,8 +669,31 @@ static string BuildVoiceTwiML(string forwardToPhoneNumber, Uri recordingStatusCa
 """;
     }
 
-    var escapedNumber = SecurityElement.Escape(forwardToPhoneNumber);
+    var escapedNumber = SecurityElement.Escape(twilioOptions.ForwardToPhoneNumber);
     var escapedCallback = SecurityElement.Escape(recordingStatusCallback.ToString());
+
+    if (twilioOptions.EnableLiveMediaStreams)
+    {
+        var escapedStreamName = SecurityElement.Escape(twilioOptions.LiveStreamName);
+        var escapedStreamUri = SecurityElement.Escape(mediaStreamUri.ToString());
+        var escapedTrack = SecurityElement.Escape(twilioOptions.LiveStreamTrack);
+
+        return $"""
+<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+  <Say>This call may be recorded and monitored for transcription and follow up.</Say>
+  <Start>
+    <Stream name="{escapedStreamName}" url="{escapedStreamUri}" track="{escapedTrack}">
+      <Parameter name="source" value="twilio-live-media-stream" />
+      <Parameter name="mode" value="sales-call-training" />
+    </Stream>
+  </Start>
+  <Dial record="record-from-answer-dual" recordingStatusCallback="{escapedCallback}" recordingStatusCallbackEvent="completed">
+    <Number>{escapedNumber}</Number>
+  </Dial>
+</Response>
+""";
+    }
 
     return $"""
 <?xml version="1.0" encoding="UTF-8"?>

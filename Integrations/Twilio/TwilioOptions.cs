@@ -12,4 +12,9 @@ public sealed class TwilioOptions
     public string ForwardToPhoneNumber { get; set; } = "";
     public ProcessingMode DefaultProcessingMode { get; set; } = ProcessingMode.TranscribeAndSummarize;
     public SummarizationProfile DefaultSummarizationProfile { get; set; } = SummarizationProfile.IntakeCall;
+    public bool EnableLiveMediaStreams { get; set; } = false;
+    public string LiveStreamTrack { get; set; } = "both_tracks";
+    public string LiveStreamName { get; set; } = "thoughtbuffer-live";
+    public bool LiveStreamStoreMetadata { get; set; } = true;
+    public bool LiveStreamStoreRawChunks { get; set; } = false;
 }

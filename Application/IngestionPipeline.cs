@@ -1,4 +1,5 @@
 using System.Text.Json;
+using Microsoft.Extensions.Logging;
 using ThoughtBuffer.Formatting;
 using ThoughtBuffer.Models;
 using ThoughtBuffer.Services;
@@ -9,7 +10,8 @@ namespace ThoughtBuffer.Application;
 public sealed class IngestionPipeline(
     ITranscriptionService transcriber,
     ISummarizationService summarizer,
-    IArtifactStorage? artifactStorage = null) : IIngestionPipeline
+    IArtifactStorage? artifactStorage = null,
+    ILogger<IngestionPipeline>? logger = null) : IIngestionPipeline
 {
     public Task<IReadOnlyList<IngestionPipelineResult>> ProcessBatchAudioAsync(
         BatchIngestionRequest request,
@@ -118,12 +120,14 @@ public sealed class IngestionPipeline(
                     $"{sessionArtifactRoot}/audio/{entry.FileName}",
                     audioPath,
                     cancellationToken);
+                LogArtifactWriteCompleted(request.Session, audioArtifact);
 
                 transcriptArtifact = await artifactStorage.SaveTextAsync(
                     ArtifactKind.Transcript,
                     $"{sessionArtifactRoot}/transcripts/{outputBaseName}.txt",
                     transcript,
                     cancellationToken);
+                LogArtifactWriteCompleted(request.Session, transcriptArtifact);
 
                 if (markdown is not null)
                 {
@@ -132,6 +136,7 @@ public sealed class IngestionPipeline(
                         $"{sessionArtifactRoot}/notes/{outputBaseName}.md",
                         markdown,
                         cancellationToken);
+                    LogArtifactWriteCompleted(request.Session, noteArtifact);
                 }
             }
 
@@ -179,6 +184,7 @@ public sealed class IngestionPipeline(
                 $"sessions/{request.Session.Id}/metadata/recording.json",
                 json,
                 cancellationToken);
+            LogArtifactWriteCompleted(request.Session, metadataArtifact);
 
             results = results
                 .Select(result => result with { MetadataArtifact = metadataArtifact })
@@ -198,4 +204,13 @@ public sealed class IngestionPipeline(
             asset.LastWriteTimeUtc,
             asset.ImportedAtUtc
         );
+
+    void LogArtifactWriteCompleted(IngestionSession session, ArtifactWriteResult artifact) =>
+        logger?.LogInformation(
+            "Artifact write completed. SessionId: {SessionId}. SourceSystem: {SourceSystem}. ArtifactKind: {ArtifactKind}. StorageProvider: {StorageProvider}. ArtifactPath: {ArtifactPath}.",
+            session.Id,
+            session.Source,
+            artifact.Kind,
+            artifact.StorageProvider,
+            artifact.Path);
 }

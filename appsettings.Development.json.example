@@ -19,6 +19,11 @@
     "ValidateSignatures": false,
     "ForwardToPhoneNumber": "+15555550100",
     "DefaultProcessingMode": "TranscribeAndSummarize",
-    "DefaultSummarizationProfile": "IntakeCall"
+    "DefaultSummarizationProfile": "IntakeCall",
+    "EnableLiveMediaStreams": false,
+    "LiveStreamTrack": "both_tracks",
+    "LiveStreamName": "thoughtbuffer-live",
+    "LiveStreamStoreMetadata": true,
+    "LiveStreamStoreRawChunks": false
   }
 }

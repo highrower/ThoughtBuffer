@@ -82,7 +82,18 @@ public static class ThoughtBufferConfiguration
                 ignoreCase: true,
                 out SummarizationProfile profile)
                 ? profile
-                : SummarizationProfile.IntakeCall
+                : SummarizationProfile.IntakeCall,
+            EnableLiveMediaStreams = bool.TryParse(section[nameof(TwilioOptions.EnableLiveMediaStreams)], out var enableLiveMediaStreams)
+                ? enableLiveMediaStreams
+                : false,
+            LiveStreamTrack = section[nameof(TwilioOptions.LiveStreamTrack)] ?? "both_tracks",
+            LiveStreamName = section[nameof(TwilioOptions.LiveStreamName)] ?? "thoughtbuffer-live",
+            LiveStreamStoreMetadata = bool.TryParse(section[nameof(TwilioOptions.LiveStreamStoreMetadata)], out var liveStreamStoreMetadata)
+                ? liveStreamStoreMetadata
+                : true,
+            LiveStreamStoreRawChunks = bool.TryParse(section[nameof(TwilioOptions.LiveStreamStoreRawChunks)], out var liveStreamStoreRawChunks)
+                ? liveStreamStoreRawChunks
+                : false
         };
     }
 }

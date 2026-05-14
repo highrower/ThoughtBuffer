@@ -45,6 +45,13 @@ public sealed class TwilioRecordingIngestionService(
             ExternalId: $"{request.CallSid}:{request.RecordingSid}",
             DisplayName: $"Twilio recording {request.RecordingSid}");
 
+        logger.LogInformation(
+            "Twilio ingestion session created. SessionId: {SessionId}. SourceSystem: {SourceSystem}. CallSid: {CallSid}. RecordingSid: {RecordingSid}.",
+            session.Id,
+            session.Source,
+            request.CallSid,
+            request.RecordingSid);
+
         var downloadedPath = await DownloadRecordingAsync(request, session, cancellationToken);
         var fileInfo = new FileInfo(downloadedPath);
         var audioAsset = new AudioAsset(
@@ -105,6 +112,12 @@ public sealed class TwilioRecordingIngestionService(
         if (!storedPath.StartsWith(storageRoot, StringComparison.OrdinalIgnoreCase))
             throw new TwilioRecordingIngestionException("Invalid Twilio recording file path.", "invalid_recording_path");
 
+        logger.LogInformation(
+            "Twilio recording download started. SessionId: {SessionId}. CallSid: {CallSid}. RecordingSid: {RecordingSid}.",
+            session.Id,
+            request.CallSid,
+            request.RecordingSid);
+
         using var httpRequest = new HttpRequestMessage(HttpMethod.Get, recordingUri);
         var credentials = Convert.ToBase64String(Encoding.ASCII.GetBytes($"{options.AccountSid}:{options.AuthToken}"));
         httpRequest.Headers.Authorization = new AuthenticationHeaderValue("Basic", credentials);
@@ -138,6 +151,14 @@ public sealed class TwilioRecordingIngestionService(
             await using var source = await response.Content.ReadAsStreamAsync(cancellationToken);
             await using var target = File.Create(storedPath);
             await source.CopyToAsync(target, cancellationToken);
+
+            var fileInfo = new FileInfo(storedPath);
+            logger.LogInformation(
+                "Twilio recording download completed. SessionId: {SessionId}. CallSid: {CallSid}. RecordingSid: {RecordingSid}. SizeBytes: {SizeBytes}.",
+                session.Id,
+                request.CallSid,
+                request.RecordingSid,
+                fileInfo.Length);
 
             return storedPath;
         }

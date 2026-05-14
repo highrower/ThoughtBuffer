@@ -1,6 +1,8 @@
 # Twilio Batch Call Recording
 
-This phase adds the first Twilio source adapter skeleton. It can answer a Twilio voice webhook with TwiML that forwards a call and enables call recording. It does not download recordings or process calls yet.
+Twilio batch call recording is implemented as a source adapter for the existing batch ingestion pipeline.
+
+The API answers Twilio voice webhooks with TwiML, forwards calls to `Twilio__ForwardToPhoneNumber`, records the bridged call through Twilio's `<Dial>` verb, accepts completed recording callbacks, downloads the recording with Twilio account credentials, and processes the local audio file through `ProcessBatchAudioAsync`.
 
 ## Webhook URLs
 
@@ -37,7 +39,7 @@ The voice endpoint returns TwiML that:
 - sets `recordingStatusCallback` to `/api/twilio/recording-status`
 - requests `recordingStatusCallbackEvent=completed`
 
-Twilio will later call the recording status callback with form-encoded fields such as:
+Twilio calls the recording status callback with form-encoded fields such as:
 
 ```text
 CallSid
@@ -57,9 +59,36 @@ The API currently:
 - validates required fields
 - optionally validates `X-Twilio-Signature`
 - ignores non-completed recording statuses
-- accepts completed callbacks as ready for the next batch phase
+- downloads completed recordings with `Twilio__AccountSid` and `Twilio__AuthToken`
+- creates an `IngestionSession` with `SourceSystem.TwilioRecording`
+- maps `IngestionSession.ExternalId` to `CallSid:RecordingSid`
+- creates a local `AudioAsset` and `BatchAudioInput`
+- processes the recording through `ProcessBatchAudioAsync`
+- writes audio, transcript, note, and metadata artifacts through the configured `IArtifactStorage`
 
-It does not download the recording yet.
+Completed webhook responses include status, session ID, CallSid, RecordingSid, processing mode, summarization profile, and artifact references when available.
+
+## Verified Real-Call Flow
+
+Phase 6B was verified with a real Twilio call against the deployed API:
+
+1. The Twilio number receives an inbound call.
+2. `POST /api/twilio/voice` validates the Twilio signature and returns TwiML.
+3. Twilio dials `Twilio__ForwardToPhoneNumber`.
+4. Twilio records the bridged call through `DialVerb`.
+5. Twilio sends a completed recording callback to `POST /api/twilio/recording-status`.
+6. The API validates the callback and required recording fields.
+7. The Twilio adapter downloads the recording to temporary local API storage.
+8. The adapter creates an `IngestionSession` with `SourceSystem.TwilioRecording`.
+9. The adapter creates `AudioAsset` and `BatchAudioInput`.
+10. `ProcessBatchAudioAsync` transcribes and summarizes the recording.
+11. Azure Blob Storage receives artifacts under `sessions/{sessionId}/`:
+    - `audio/`
+    - `transcripts/`
+    - `notes/`
+    - `metadata/`
+
+The real-call transcript closely matched the spoken phrase: `Thought Buffer Twilio ingestion test one two three.`
 
 ## Azure App Service Settings
 
@@ -82,9 +111,9 @@ Twilio__ValidateSignatures=false
 
 Do not commit Twilio secrets.
 
-## Future Batch Flow
+## Batch Flow
 
-The next Twilio phase should be:
+Current flow:
 
 ```text
 Twilio recording completed webhook
@@ -97,6 +126,43 @@ Twilio recording completed webhook
 ```
 
 Twilio remains a source adapter. It should not become the center of the domain model.
+
+## Observability
+
+The API emits structured logs for the Twilio batch flow:
+
+- Twilio voice webhook received
+- Twilio recording callback received
+- Twilio ingestion session created
+- Twilio recording download started
+- Twilio recording download completed
+- Twilio recording ingestion started
+- Twilio recording ingestion completed
+- Artifact write completed
+
+Logs include correlation IDs such as `SessionId`, `CallSid`, and `RecordingSid`. Logs must not include Twilio credentials, full transcript text, note content, or private blob contents.
+
+To enable App Service logs for callback diagnostics:
+
+```powershell
+az webapp log config `
+  --name thoughtbuffer-api-jairo-dev-62217 `
+  --resource-group rg-thoughtbuffer-dev `
+  --application-logging filesystem `
+  --level Information `
+  --web-server-logging filesystem
+```
+
+To download logs after a test:
+
+```powershell
+az webapp log download `
+  --name thoughtbuffer-api-jairo-dev-62217 `
+  --resource-group rg-thoughtbuffer-dev `
+  --log-file appservice-logs.zip
+```
+
+For routine production operation, keep retention modest and avoid increasing log verbosity beyond what is needed for diagnostics.
 
 ## Deferred
 
