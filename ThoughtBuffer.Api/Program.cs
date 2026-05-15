@@ -298,12 +298,43 @@ app.MapPost("/api/twilio/voice", async (
         }
     }
 
-    var recordingStatusCallback = BuildEndpointUri(request, "/api/twilio/recording-status");
-    var mediaStreamUri = BuildWebSocketEndpointUri(request, "/api/twilio/media-stream");
+    var recordingStatusCallback = BuildEndpointUri(request, twilioOptions, "/api/twilio/recording-status");
+    var mediaStreamUri = BuildWebSocketEndpointUri(request, twilioOptions, "/api/twilio/media-stream");
     var twiml = BuildVoiceTwiML(twilioOptions, recordingStatusCallback, mediaStreamUri);
+    var containsStartStream = ContainsStartStream(twiml);
 
-    logger.LogInformation("Twilio voice webhook returned TwiML.");
+    logger.LogInformation(
+        "Twilio voice webhook returned TwiML. EnableLiveMediaStreams: {EnableLiveMediaStreams}. LiveStreamTrack: {LiveStreamTrack}. LiveStreamName: {LiveStreamName}. MediaStreamUri: {MediaStreamUri}. RecordingStatusCallback: {RecordingStatusCallback}. ContainsStartStream: {ContainsStartStream}. ForwardToPhoneLast4: {ForwardToPhoneLast4}.",
+        twilioOptions.EnableLiveMediaStreams,
+        twilioOptions.LiveStreamTrack,
+        twilioOptions.LiveStreamName,
+        mediaStreamUri,
+        recordingStatusCallback,
+        containsStartStream,
+        RedactPhoneLast4(twilioOptions.ForwardToPhoneNumber));
     return Results.Text(twiml, "application/xml");
+});
+
+app.MapGet("/api/twilio/voice/preview", (
+    HttpRequest request,
+    TwilioOptions twilioOptions) =>
+{
+    var recordingStatusCallback = BuildEndpointUri(request, twilioOptions, "/api/twilio/recording-status");
+    var mediaStreamUri = BuildWebSocketEndpointUri(request, twilioOptions, "/api/twilio/media-stream");
+    var twiml = BuildVoiceTwiML(twilioOptions, recordingStatusCallback, mediaStreamUri);
+    var redactedTwiml = RedactConfiguredPhoneNumber(twiml, twilioOptions.ForwardToPhoneNumber);
+
+    return Results.Ok(new
+    {
+        enableLiveMediaStreams = twilioOptions.EnableLiveMediaStreams,
+        streamUrl = mediaStreamUri.ToString(),
+        streamTrack = twilioOptions.LiveStreamTrack,
+        streamName = twilioOptions.LiveStreamName,
+        forwardToPhoneNumber = RedactPhoneLast4(twilioOptions.ForwardToPhoneNumber),
+        recordingStatusCallback = recordingStatusCallback.ToString(),
+        containsStartStream = ContainsStartStream(twiml),
+        twiml = redactedTwiml
+    });
 });
 
 app.MapGet("/api/twilio/media-stream", async (
@@ -634,27 +665,79 @@ static IEnumerable<string> GetMissingRequiredTwilioFields(TwilioRecordingWebhook
 static Uri BuildPublicRequestUri(HttpRequest request)
 {
     var scheme = request.Headers["X-Forwarded-Proto"].FirstOrDefault() ?? request.Scheme;
-    var host = request.Headers["X-Forwarded-Host"].FirstOrDefault() ?? request.Host.Value;
+    var host = request.Headers["X-Forwarded-Host"].FirstOrDefault() ?? request.Host.Value ?? "";
     return new Uri($"{scheme}://{host}{request.Path}{request.QueryString}");
 }
 
-static Uri BuildEndpointUri(HttpRequest request, string path)
+static Uri BuildEndpointUri(HttpRequest request, TwilioOptions twilioOptions, string path)
 {
+    if (TryBuildFromPublicBaseUrl(twilioOptions, path, out var configuredUri))
+        return configuredUri;
+
     var scheme = request.Headers["X-Forwarded-Proto"].FirstOrDefault() ?? request.Scheme;
-    var host = request.Headers["X-Forwarded-Host"].FirstOrDefault() ?? request.Host.Value;
+    var host = request.Headers["X-Forwarded-Host"].FirstOrDefault() ?? request.Host.Value ?? "";
     return new Uri($"{scheme}://{host}{path}");
 }
 
-static Uri BuildWebSocketEndpointUri(HttpRequest request, string path)
+static Uri BuildWebSocketEndpointUri(HttpRequest request, TwilioOptions twilioOptions, string path)
 {
+    if (TryBuildFromPublicBaseUrl(twilioOptions, path, out var configuredUri))
+    {
+        var builder = new UriBuilder(configuredUri)
+        {
+            Scheme = Uri.UriSchemeHttps.Equals(configuredUri.Scheme, StringComparison.OrdinalIgnoreCase)
+                ? "wss"
+                : "ws",
+            Port = -1
+        };
+        return builder.Uri;
+    }
+
     var scheme = request.Headers["X-Forwarded-Proto"].FirstOrDefault() ?? request.Scheme;
-    var host = request.Headers["X-Forwarded-Host"].FirstOrDefault() ?? request.Host.Value;
-    var webSocketScheme = scheme.Equals("https", StringComparison.OrdinalIgnoreCase)
-        ? "wss"
-        : "ws";
+    var host = request.Headers["X-Forwarded-Host"].FirstOrDefault() ?? request.Host.Value ?? "";
+    var isLocalHost = host.StartsWith("localhost", StringComparison.OrdinalIgnoreCase)
+        || host.StartsWith("127.0.0.1", StringComparison.OrdinalIgnoreCase);
+    var webSocketScheme = isLocalHost && !scheme.Equals("https", StringComparison.OrdinalIgnoreCase)
+        ? "ws"
+        : "wss";
 
     return new Uri($"{webSocketScheme}://{host}{path}");
 }
+
+static bool TryBuildFromPublicBaseUrl(TwilioOptions twilioOptions, string path, out Uri uri)
+{
+    uri = null!;
+    if (string.IsNullOrWhiteSpace(twilioOptions.PublicBaseUrl))
+        return false;
+
+    if (!Uri.TryCreate(twilioOptions.PublicBaseUrl, UriKind.Absolute, out var baseUri))
+        return false;
+
+    uri = new Uri(baseUri, path);
+    return true;
+}
+
+static string RedactPhoneLast4(string phoneNumber)
+{
+    var digits = new string(phoneNumber.Where(char.IsDigit).ToArray());
+    if (digits.Length == 0)
+        return "";
+
+    var last4 = digits.Length <= 4 ? digits : digits[^4..];
+    return $"***{last4}";
+}
+
+static string RedactConfiguredPhoneNumber(string value, string phoneNumber)
+{
+    if (string.IsNullOrWhiteSpace(phoneNumber))
+        return value;
+
+    return value.Replace(phoneNumber, RedactPhoneLast4(phoneNumber), StringComparison.Ordinal);
+}
+
+static bool ContainsStartStream(string twiml) =>
+    twiml.Contains("<Start>", StringComparison.Ordinal)
+    && twiml.Contains("<Stream", StringComparison.Ordinal);
 
 static string BuildVoiceTwiML(TwilioOptions twilioOptions, Uri recordingStatusCallback, Uri mediaStreamUri)
 {
