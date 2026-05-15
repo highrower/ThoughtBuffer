@@ -56,3 +56,12 @@ __pycache__/
 .DS_Store
 Thumbs.db
 Desktop.ini
+
+# Agent and debug artifacts
+.junie/
+.background_output_*.txt
+app_logs.txt
+logs.zip
+extracted_logs/
+synthetic-live-stream.json
+docs/ai/thoughtbuffer-agent-handoff-context.md
