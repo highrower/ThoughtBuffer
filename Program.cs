@@ -1,31 +1,35 @@
-﻿using System.Text.Json;
+using Microsoft.Extensions.Hosting;
+using ThoughtBuffer.Options;
 using ThoughtBuffer.Services;
-using ThoughtBuffer.Models;
-using ThoughtBuffer.Formatting;
-using ThoughtBuffer;
 
-var apiKey = Environment.GetEnvironmentVariable("THOUGHT_BUFFER_OPENAI_KEY")
-             ?? throw new InvalidOperationException("API key not found in environment variables.");
+var builder = Host.CreateApplicationBuilder(args);
 
-const string devicePath      = @"E:\REC_FILE";
-const string recordingFolder = "FOLDER01";
-const string archiveFolder   = "Archive";
-const string solutionRoot    = @"G:\Projects\Dotnet\ThoughtBuffer\";
+var thoughtBufferOptions = builder.Configuration
+    .GetThoughtBufferOptions();
 
-var recordingsPath       = Path.Combine(devicePath, recordingFolder);
-var archivePath          = Path.Combine(devicePath, archiveFolder);
-var baseAppData          = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
-var appFolder            = Path.Combine(baseAppData,  "ThoughtBuffer");
-var copyFileFolder       = Path.Combine(appFolder,    "Recordings");
-var filteredFolder       = Path.Combine(appFolder,    "Filtered");
-var transcriptFolder     = Path.Combine(appFolder,    "Transcripts");
-var notesFolder          = Path.Combine(appFolder,    "Notes");
-var pythonExe            = Path.Combine(solutionRoot, ".venv",  "Scripts", "python.exe");
-var scriptPath           = Path.Combine(solutionRoot, "python", "filter_audio.py");
+var openAiOptions = builder.Configuration
+    .GetOpenAiOptions();
 
-var filtrationService    = new PythonAudioFilterService(pythonExe, scriptPath);
-var transcriptionService = new OpenAiTranscriptionService(apiKey);
-var summarizationService = new OpenAiSummarizationService(apiKey);
+var localStorageOptions = builder.Configuration
+    .GetLocalStorageOptions();
+
+openAiOptions.ApiKey = ResolveOpenAiApiKey(openAiOptions);
+
+var solutionRoot = ResolveSolutionRoot(thoughtBufferOptions);
+var devicePath = ResolveDevicePath(thoughtBufferOptions);
+var recordingsPath = Path.Combine(devicePath, thoughtBufferOptions.RecordingFolder);
+var archivePath = Path.Combine(devicePath, thoughtBufferOptions.ArchiveFolder);
+var appPaths = localStorageOptions.ToAppPaths(recordingsPath, archivePath, "Console");
+var pythonExe = ResolveConfiguredPath(
+    thoughtBufferOptions.PythonExePath,
+    Path.Combine(solutionRoot, ".venv", "Scripts", "python.exe"));
+var scriptPath = ResolveConfiguredPath(
+    thoughtBufferOptions.FilterScriptPath,
+    Path.Combine(solutionRoot, "python", "filter_audio.py"));
+
+var filtrationService = new PythonAudioFilterService(pythonExe, scriptPath);
+var transcriptionService = new OpenAiTranscriptionService(openAiOptions.ApiKey, openAiOptions.TranscriptionModel);
+var summarizationService = new OpenAiSummarizationService(openAiOptions.ApiKey, openAiOptions.SummarizationModel);
 
 Console.WriteLine("Options: "                                                +
                   "\n\t1: filter down all audio "                            +
@@ -34,13 +38,49 @@ Console.WriteLine("Options: "                                                +
                   "\n\tQ: Quit");
 var response = Console.ReadLine();
 
-Directory.CreateDirectory(copyFileFolder);
-Directory.CreateDirectory(transcriptFolder);
-Directory.CreateDirectory(notesFolder);
-Directory.CreateDirectory(filteredFolder);
-
-var appPaths = new AppPaths(appFolder, recordingsPath, copyFileFolder, filteredFolder, archivePath, transcriptFolder, notesFolder);
+Directory.CreateDirectory(appPaths.appFolder);
+Directory.CreateDirectory(appPaths.copyFileFolder);
+Directory.CreateDirectory(appPaths.transcriptFolder);
+Directory.CreateDirectory(appPaths.notesFolder);
+Directory.CreateDirectory(appPaths.filteredFolder);
 
 await ThoughtBuffer.ThoughtBuffer.Main(response, appPaths, filtrationService, transcriptionService, summarizationService);
 
 Console.WriteLine("Done.");
+
+static string ResolveOpenAiApiKey(OpenAiOptions options)
+{
+    var apiKey = !string.IsNullOrWhiteSpace(options.ApiKey)
+        ? options.ApiKey
+        : Environment.GetEnvironmentVariable("THOUGHT_BUFFER_OPENAI_KEY");
+
+    return !string.IsNullOrWhiteSpace(apiKey)
+        ? apiKey
+        : throw new InvalidOperationException("OpenAI API key not found. Set OpenAI:ApiKey or THOUGHT_BUFFER_OPENAI_KEY.");
+}
+
+static string ResolveSolutionRoot(ThoughtBufferOptions options)
+{
+    if (!string.IsNullOrWhiteSpace(options.SolutionRoot))
+        return Environment.ExpandEnvironmentVariables(options.SolutionRoot);
+
+    return Directory.GetCurrentDirectory();
+}
+
+static string ResolveDevicePath(ThoughtBufferOptions options)
+{
+    if (!string.IsNullOrWhiteSpace(options.DevicePath))
+        return Environment.ExpandEnvironmentVariables(options.DevicePath);
+
+    var baseAppData = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
+    return Path.Combine(baseAppData, "ThoughtBuffer", "RecorderDevice");
+}
+
+static string ResolveConfiguredPath(string configuredPath, string defaultPath)
+{
+    var path = string.IsNullOrWhiteSpace(configuredPath)
+        ? defaultPath
+        : configuredPath;
+
+    return Environment.ExpandEnvironmentVariables(path);
+}

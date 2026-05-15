@@ -1,6 +1,4 @@
-﻿using System.Runtime.InteropServices.ComTypes;
-using System.Text.Json;
-using ThoughtBuffer.Formatting;
+using ThoughtBuffer.Application;
 using ThoughtBuffer.Models;
 using ThoughtBuffer.Services;
 
@@ -8,110 +6,126 @@ namespace ThoughtBuffer;
 
 public class ThoughtBuffer
 {
-	static string[] _files;
-	public static async Task Main(
-		string? choice,
-		AppPaths paths,
-		IAudioFilterService filtrationService,
-		ITranscriptionService transcriber,
-		ISummarizationService summarizer)
-	{
-		if (GetChoice(choice) == 'Q')
-			return;
-		
-		_files = Directory.GetFiles(paths.recordingsPath, "*.wav");
-		if (_files.Length == 0)
-			_files = Directory.GetFiles(paths.recordingsPath, "*.mp3");
-		
-		switch (GetChoice(choice))
-		{
-			case '1':
-				await FilterFiles(paths, filtrationService);
-				break;
-			case '2':
-				await TranscribeAndSummarize(paths, transcriber, summarizer, false);
-				break;
-			case '3':
-				await FilterFiles(paths, filtrationService);
-				await TranscribeAndSummarize(paths, transcriber, summarizer);
-				break;
-			default:
-				return;
-		}
-		if (!Directory.Exists(paths.recordingsPath) || !Directory.Exists(paths.archivePath))
-			throw new DirectoryNotFoundException("Recorder or Archive not found.");
-	}
+    static string[] _sourceMp3Files = [];
 
-	static char GetChoice(string? choice) =>
-		choice is "1" or "2" or "3" ? choice[0] : 'Q';
+    public static async Task Main(
+        string? choice,
+        AppPaths paths,
+        IAudioFilterService filtrationService,
+        ITranscriptionService transcriber,
+        ISummarizationService summarizer,
+        CancellationToken cancellationToken = default)
+    {
+        if (GetChoice(choice) == 'Q')
+            return;
 
-	static async Task FilterFiles(AppPaths paths, IAudioFilterService filterer)
-	{
-		foreach (var file in _files)
-		{
-			var baseName        = Path.GetFileNameWithoutExtension(file);
-			var destinationPath = Path.Combine(paths.filteredFolder, $"{baseName}.trimmed.wav");			
-			
-			var filteredPath = await filterer.FilterFile(file, destinationPath);
-			Console.WriteLine($"Filtered {file} to {filteredPath}");
-		}
-	}
+        if (!Directory.Exists(paths.recordingsPath) || !Directory.Exists(paths.archivePath))
+            throw new DirectoryNotFoundException("Recorder or Archive not found.");
 
-	static async Task TranscribeAndSummarize(
-		AppPaths paths,
-		ITranscriptionService transcriber,
-		ISummarizationService summarizer,
-		bool filtered = true)
-	{
-		var imported = new List<RecordingEntry>();
-		var movedPath = filtered ? paths.filteredFolder : paths.copyFileFolder;
+        _sourceMp3Files = Directory.GetFiles(paths.recordingsPath, "*.mp3");
 
-		foreach (var file in _files)
-		{
-			var fileName        = Path.GetFileName(file);
-			var copyPath = Path.Combine(movedPath, fileName);
-    
-			File.Copy(file, copyPath, true);
-			Console.WriteLine($"Copied {fileName} to {copyPath}");
+        switch (GetChoice(choice))
+        {
+            case '1':
+                await FilterFiles(paths, filtrationService, cancellationToken);
+                break;
 
-			var info = new FileInfo(copyPath);
+            case '2':
+                await TranscribeAndSummarize(paths, transcriber, summarizer, cancellationToken);
+                break;
 
-			imported.Add(new RecordingEntry(
-							 fileName,
-							 file,
-							 filtered ? null : copyPath,
-							 filtered ? copyPath : null,
-							 info.Length,
-							 info.LastWriteTimeUtc,
-							 DateTime.UtcNow
-						 ));
+            case '3':
+                await FilterFiles(paths, filtrationService, cancellationToken);
+                await TranscribeAndSummarize(paths, transcriber, summarizer, cancellationToken);
+                break;
 
-			// File.Move(file, Path.Combine(archivePath, fileName)); TODO: Move file to archive after processing,
-			// but for now we will just copy it to avoid issues during development.
-		}
+            default:
+                return;
+        }
+    }
 
-		foreach (var entry in imported)
-		{
-			var transcript = await transcriber.TranscribeAsync(entry.FilteredPath);
-			Console.WriteLine($"Transcript for {entry.FileName}:");
-			Console.WriteLine(transcript);
+    static char GetChoice(string? choice) =>
+        choice is "1" or "2" or "3" ? choice[0] : 'Q';
 
-			var transcriptPath = Path.Combine(paths.transcriptFolder, Path.ChangeExtension(entry.FileName, ".txt"));
-			await File.WriteAllTextAsync(transcriptPath, transcript);
+    static async Task FilterFiles(
+        AppPaths paths,
+        IAudioFilterService filterer,
+        CancellationToken cancellationToken = default)
+    {
+        foreach (var file in _sourceMp3Files)
+        {
+            var baseName = Path.GetFileNameWithoutExtension(file);
+            var destinationPath = Path.Combine(paths.filteredFolder, $"{baseName}.trimmed.mp3");
 
-			var summary = await summarizer.SummarizeAsync(transcript);
+            if (File.Exists(destinationPath))
+            {
+                Console.WriteLine($"Skipping already filtered file: {destinationPath}");
+                continue;
+            }
 
-			var notePath = Path.Combine(paths.notesFolder, Path.ChangeExtension(entry.FileName, ".md"));
-			var markdown = MarkdownNoteBuilder.Build(entry, summary, transcript);
-			await File.WriteAllTextAsync(notePath, markdown);
-		}
+            var filteredPath = await filterer.FilterFile(file, destinationPath, cancellationToken);
+            if (string.IsNullOrWhiteSpace(filteredPath))
+            {
+                Console.WriteLine($"Skipped {file} because no speech was detected.");
+                continue;
+            }
 
-		var json = JsonSerializer.Serialize(imported, new JsonSerializerOptions
-		{
-			WriteIndented = true,
-		});
+            Console.WriteLine($"Filtered {file} to {filteredPath}");
+        }
+    }
 
-		var jsonPath = Path.Combine(paths.appFolder, "recordings.json");
-		await File.WriteAllTextAsync(jsonPath, json);
-	}
+    static async Task TranscribeAndSummarize(
+        AppPaths paths,
+        ITranscriptionService transcriber,
+        ISummarizationService summarizer,
+        CancellationToken cancellationToken = default)
+    {
+        var filteredFiles = Directory.GetFiles(paths.filteredFolder, "*.trimmed.mp3");
+
+        if (filteredFiles.Length == 0)
+            throw new InvalidOperationException("No filtered .trimmed.mp3 files were found. Run option 1 first.");
+
+        var session = new IngestionSession(
+            Guid.NewGuid().ToString("N"),
+            IngestionMode.AudioFile,
+            SourceSystem.LocalRecorder,
+            DateTime.UtcNow,
+            DisplayName: "Local recorder batch"
+        );
+
+        var audioAssets = new List<AudioAsset>();
+
+        foreach (var file in filteredFiles)
+        {
+            var fileName = Path.GetFileName(file);
+            var info = new FileInfo(file);
+            const long maxBytes = 25 * 1024 * 1024;
+
+            if (info.Length > maxBytes)
+            {
+                throw new InvalidOperationException(
+                    $"Audio file is {info.Length / (1024.0 * 1024.0):F2} MB, which exceeds the 25 MB Audio API limit.");
+            }
+
+            audioAssets.Add(new AudioAsset(
+                Guid.NewGuid().ToString("N"),
+                session.Id,
+                fileName,
+                file,
+                null,
+                file,
+                info.Length,
+                info.LastWriteTimeUtc,
+                DateTime.UtcNow
+            ));
+        }
+
+        IIngestionPipeline pipeline = new IngestionPipeline(transcriber, summarizer);
+        await pipeline.ProcessLocalAudioFilesAsync(
+            session,
+            audioAssets,
+            paths,
+            new IngestionProcessingOptions(),
+            cancellationToken);
+    }
 }

@@ -1,4 +1,3 @@
-using System;
 using System.Net.Http.Headers;
 using System.Text.Json;
 
@@ -6,43 +5,49 @@ namespace ThoughtBuffer.Services;
 
 public class OpenAiTranscriptionService : ITranscriptionService
 {
-    private readonly HttpClient _httpClient;
+	readonly HttpClient _httpClient;
+	readonly string     _model;
 
-    public OpenAiTranscriptionService(string apiKey)
-    {
-        _httpClient = new HttpClient();
-        _httpClient.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", apiKey);
-    }
+	public OpenAiTranscriptionService(string apiKey, string model = "gpt-4o-mini-transcribe")
+	{
+		if (string.IsNullOrWhiteSpace(apiKey))
+			throw new ArgumentException("API key is required.", nameof(apiKey));
 
-    public async Task<string> TranscribeAsync(string audioFilePath, CancellationToken cancellationToken = default)
-    {
-        using var form = new MultipartFormDataContent();
+		if (string.IsNullOrWhiteSpace(model))
+			throw new ArgumentException("Transcription model is required.", nameof(model));
 
-        await using var stream = File.OpenRead(audioFilePath);
-        using var fileContent = new StreamContent(stream);
-        fileContent.Headers.ContentType = new MediaTypeHeaderValue(
-            Path.GetExtension(audioFilePath).ToLowerInvariant() switch
-            {
-                ".wav" => "audio/wav",
-                ".mp3" => "audio/mpeg",
-                ".m4a" => "audio/mp4",
-                _ => "application/octet-stream"
-            });
+		_model = model;
+		_httpClient = new HttpClient
+		{
+			Timeout = TimeSpan.FromMinutes(15)
+		};
 
-        form.Add(fileContent, "file", Path.GetFileName(audioFilePath));
-        form.Add(new StringContent("gpt-4o-mini-transcribe"), "model");
+		_httpClient.DefaultRequestHeaders.Authorization =
+			new AuthenticationHeaderValue("Bearer", apiKey);
+	}
 
-        using var response = await _httpClient.PostAsync(
-            "https://api.openai.com/v1/audio/transcriptions",
-            form,
-            cancellationToken);
+	public async Task<string> TranscribeAsync(string audioFilePath, CancellationToken cancellationToken = default)
+	{
+		using var form = new MultipartFormDataContent();
 
-        response.EnsureSuccessStatusCode();
+		await using var stream      = File.OpenRead(audioFilePath);
+		using var       fileContent = new StreamContent(stream);
+		fileContent.Headers.ContentType = new MediaTypeHeaderValue("audio/mpeg");
 
-        var json = await response.Content.ReadAsStringAsync(cancellationToken);
+		form.Add(fileContent,                "file", Path.GetFileName(audioFilePath));
+		form.Add(new StringContent(_model), "model");
 
-        using var doc = JsonDocument.Parse(json);
-        return doc.RootElement.GetProperty("text").GetString()
-               ?? throw new InvalidOperationException("Transcript text missing.");
-    }
+		using var response = await _httpClient.PostAsync(
+								 "https://api.openai.com/v1/audio/transcriptions",
+								 form,
+								 cancellationToken);
+
+		response.EnsureSuccessStatusCode();
+
+		var json = await response.Content.ReadAsStringAsync(cancellationToken);
+
+		using var doc = JsonDocument.Parse(json);
+		return doc.RootElement.GetProperty("text").GetString()
+			   ?? throw new InvalidOperationException("Transcript text missing.");
+	}
 }

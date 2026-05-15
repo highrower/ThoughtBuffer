@@ -25,30 +25,51 @@ public sealed class PythonAudioFilterService(
 
         Directory.CreateDirectory(outputDirectory);
 
-        var finalOutputPath = Path.ChangeExtension(outputPath, ".wav");
+        var baseName = Path.GetFileNameWithoutExtension(inputPath);
+        var finalOutputPath = Path.ChangeExtension(outputPath, ".mp3");
+
+        if (File.Exists(finalOutputPath))
+        {
+            Console.WriteLine($"[{baseName}] Filtered output already exists. Skipping.");
+            return finalOutputPath;
+        }
 
         var tempDirectory = Path.Combine(outputDirectory, "_temp");
         Directory.CreateDirectory(tempDirectory);
 
-        var tempWavPath = Path.Combine(
-            tempDirectory,
-            $"{Path.GetFileNameWithoutExtension(inputPath)}.16k.wav");
+        var tempInputWavPath = Path.Combine(tempDirectory, $"{baseName}.16k.wav");
+        var tempFilteredWavPath = Path.Combine(tempDirectory, $"{baseName}.trimmed.wav");
+
+        Console.WriteLine($"[{baseName}] Starting filter...");
+        Console.WriteLine($"[{baseName}] Step 1/3: converting mp3 -> 16k wav");
 
         try
         {
-            var ffmpegArgs =
+            var ffmpegToWavArgs =
                 $"-y -i \"{inputPath}\" " +
                 "-vn -ac 1 -ar 16000 -sample_fmt s16 " +
-                $"\"{tempWavPath}\"";
+                $"\"{tempInputWavPath}\"";
 
-            await RunProcessAsync(ffmpegPath, ffmpegArgs, cancellationToken);
+            await RunProcessAsync(
+                ffmpegPath,
+                ffmpegToWavArgs,
+                cancellationToken,
+                heartbeatLabel: $"[{baseName}] ffmpeg conversion still running");
+
+            Console.WriteLine($"[{baseName}] Step 2/3: running python VAD");
 
             var pythonArgs =
                 $"\"{scriptPath}\" " +
-                $"--input \"{tempWavPath}\" " +
-                $"--output \"{finalOutputPath}\"";
+                $"--input \"{tempInputWavPath}\" " +
+                $"--output \"{tempFilteredWavPath}\"";
 
-            var stdout = await RunProcessAsync(pythonExe, pythonArgs, cancellationToken);
+            var stdout = await RunProcessAsync(
+                pythonExe,
+                pythonArgs,
+                cancellationToken,
+                heartbeatLabel: $"[{baseName}] python filter still running");
+
+            var wavSourceForMp3 = tempFilteredWavPath;
 
             if (!string.IsNullOrWhiteSpace(stdout))
             {
@@ -66,41 +87,60 @@ public sealed class PythonAudioFilterService(
                     }
 
                     if (doc.RootElement.TryGetProperty("segments", out var segmentsProp) &&
-                        segmentsProp.ValueKind == JsonValueKind.Number &&
-                        segmentsProp.GetInt32() == 0)
+                        segmentsProp.ValueKind == JsonValueKind.Number)
                     {
-                        File.Copy(tempWavPath, finalOutputPath, true);
+                        var segmentCount = segmentsProp.GetInt32();
+                        Console.WriteLine($"[{baseName}] Segments kept: {segmentCount}");
+
+                        if (segmentCount == 0)
+                        {
+                            Console.WriteLine($"[{baseName}] No speech detected. Skipping filtered output.");
+                            return string.Empty;
+                            
+                        }
                     }
                 }
                 catch (JsonException)
                 {
-                    if (!File.Exists(finalOutputPath))
+                    if (!File.Exists(tempFilteredWavPath))
                         throw new InvalidOperationException($"Python filter script returned unexpected output: {stdout}");
                 }
             }
 
-            if (!File.Exists(finalOutputPath))
-                throw new InvalidOperationException("Python filter script did not create the filtered output file.");
+            if (!File.Exists(wavSourceForMp3))
+                throw new InvalidOperationException("No wav file exists to convert back to mp3.");
 
+            Console.WriteLine($"[{baseName}] Step 3/3: converting filtered wav -> mp3");
+
+            var ffmpegToMp3Args =
+                $"-y -i \"{wavSourceForMp3}\" " +
+                "-ac 1 -codec:a libmp3lame -b:a 64k " +
+                $"\"{finalOutputPath}\"";
+
+            await RunProcessAsync(
+                ffmpegPath,
+                ffmpegToMp3Args,
+                cancellationToken,
+                heartbeatLabel: $"[{baseName}] ffmpeg mp3 conversion still running");
+
+            if (!File.Exists(finalOutputPath))
+                throw new InvalidOperationException("Final filtered mp3 was not created.");
+
+            Console.WriteLine($"[{baseName}] Finished: {finalOutputPath}");
             return finalOutputPath;
         }
         finally
         {
-            try
-            {
-                if (File.Exists(tempWavPath))
-                    File.Delete(tempWavPath);
-            }
-            catch
-            {
-            }
+            TryDelete(tempInputWavPath);
+            TryDelete(tempFilteredWavPath);
         }
     }
 
-    private static async Task<string> RunProcessAsync(
+    static async Task<string> RunProcessAsync(
         string fileName,
         string arguments,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        string heartbeatLabel)
     {
         var psi = new ProcessStartInfo
         {
@@ -118,6 +158,12 @@ public sealed class PythonAudioFilterService(
         var stdoutTask = process.StandardOutput.ReadToEndAsync();
         var stderrTask = process.StandardError.ReadToEndAsync();
 
+        while (!process.HasExited)
+        {
+            Console.WriteLine($"{heartbeatLabel}...");
+            await Task.Delay(TimeSpan.FromSeconds(15), cancellationToken);
+        }
+
         await process.WaitForExitAsync(cancellationToken);
 
         var stdout = await stdoutTask;
@@ -127,5 +173,17 @@ public sealed class PythonAudioFilterService(
             throw new InvalidOperationException($"{fileName} failed: {stderr}");
 
         return stdout.Trim();
+    }
+
+    static void TryDelete(string path)
+    {
+        try
+        {
+            if (File.Exists(path))
+                File.Delete(path);
+        }
+        catch
+        {
+        }
     }
 }

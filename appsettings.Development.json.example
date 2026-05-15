@@ -1,0 +1,30 @@
+{
+  "ThoughtBuffer": {
+    "DevicePath": "E:\\REC_FILE",
+    "RecordingFolder": "FOLDER01",
+    "ArchiveFolder": "Archive",
+    "SolutionRoot": "G:\\Projects\\Dotnet\\ThoughtBuffer",
+    "PythonExePath": "G:\\Projects\\Dotnet\\ThoughtBuffer\\.venv\\Scripts\\python.exe",
+    "FilterScriptPath": "G:\\Projects\\Dotnet\\ThoughtBuffer\\python\\filter_audio.py"
+  },
+  "LocalStorage": {
+    "RootPath": "%LOCALAPPDATA%\\ThoughtBuffer\\Console",
+    "MaxUploadBytes": 26214400
+  },
+  "ArtifactStorage": {
+    "Provider": "Local",
+    "LocalRootPath": "%LOCALAPPDATA%\\ThoughtBuffer\\Console\\Artifacts"
+  },
+  "Twilio": {
+    "ValidateSignatures": false,
+    "PublicBaseUrl": "",
+    "ForwardToPhoneNumber": "+15555550100",
+    "DefaultProcessingMode": "TranscribeAndSummarize",
+    "DefaultSummarizationProfile": "IntakeCall",
+    "EnableLiveMediaStreams": false,
+    "LiveStreamTrack": "both_tracks",
+    "LiveStreamName": "thoughtbuffer-live",
+    "LiveStreamStoreMetadata": true,
+    "LiveStreamStoreRawChunks": false
+  }
+}

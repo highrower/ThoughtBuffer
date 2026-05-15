@@ -1,40 +1,58 @@
-# C# build artifacts
-bin/
-obj/
+# Build results
+[Bb]in/
+[Oo]bj/
+**/[Bb]in/
+**/[Oo]bj/
 
-# Visual Studio
+# Visual Studio / Rider / VS Code user state
 .vs/
+.idea/
+.vscode/*
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/launch.json
 *.user
+*.rsuser
 *.suo
 *.userosscache
 *.sln.docstates
+*.DotSettings.user
 
-# Visual Studio Code
-.vscode/
-*.code-workspace
+# Test and coverage output
+TestResults/
+*.trx
+*.coverage
+*.coveragexml
+coverage/
+coverage*/
 
 # NuGet
-packages/
 *.nupkg
 *.snupkg
-.nuget/
+packages/
+project.lock.json
+project.assets.json
+*.nuget.props
+*.nuget.targets
 
-# ReSharper / JetBrains IDEs
-.idea/
-*.sln.iml
-_ReSharper*/
-*.resharper
+# .NET local tooling
+.config/dotnet-tools.json
 
-# Test Results
-TestResults/
-
-# IDE
-.idea/
-.DS_Store
-
-# Build logs
+# Runtime and logs
 *.log
+logs/
 
-# Rider
-.idea/
-*.sln.iml
+# Environment and secrets
+.env
+.env.*
+*.Development.json
+
+# Python local environment used by audio filtering
+.venv/
+__pycache__/
+*.py[cod]
+
+# OS files
+.DS_Store
+Thumbs.db
+Desktop.ini
