@@ -39,7 +39,22 @@ public sealed class TwilioMediaStreamIngestionService(
                     break;
                 }
 
-                ProcessMessage(message, state);
+                try
+                {
+                    ProcessMessage(message, state);
+                }
+                catch (Exception ex) when (ex is JsonException or FormatException or InvalidOperationException)
+                {
+                    state.MessageParseErrorCount++;
+                    state.FailureReason ??= ex.GetType().Name;
+                    logger.LogWarning(
+                        ex,
+                        "Twilio media stream message parsing failed. SessionId: {SessionId}. StreamSid: {StreamSid}. CallSid: {CallSid}. ParseErrorCount: {ParseErrorCount}.",
+                        state.SessionId,
+                        state.StreamSid,
+                        state.CallSid,
+                        state.MessageParseErrorCount);
+                }
             }
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
@@ -127,7 +142,7 @@ public sealed class TwilioMediaStreamIngestionService(
     {
         using var document = JsonDocument.Parse(message);
         var root = document.RootElement;
-        var eventType = GetString(root, "event");
+        var eventType = GetStringOrNumberAsString(root, "event");
 
         switch (eventType)
         {
@@ -180,11 +195,25 @@ public sealed class TwilioMediaStreamIngestionService(
     void ProcessStart(JsonElement root, TwilioMediaStreamState state)
     {
         var start = root.GetProperty("start");
-        state.StreamSid = GetString(start, "streamSid") ?? GetString(root, "streamSid");
-        state.CallSid = GetString(start, "callSid");
+        state.StreamSid = GetStringOrNumberAsString(start, "streamSid") ?? GetStringOrNumberAsString(root, "streamSid");
+        state.CallSid = GetStringOrNumberAsString(start, "callSid");
         state.StartedAtUtc = DateTime.UtcNow;
         state.MediaFormat = ReadMediaFormat(start);
         state.CustomParameters = ReadCustomParameters(start);
+
+        if (string.IsNullOrWhiteSpace(state.StreamSid))
+        {
+            state.RequiredFieldWarningCount++;
+            state.FailureReason ??= "missing_streamSid";
+            logger.LogWarning("Twilio media stream start event missing streamSid. SessionId: {SessionId}.", state.SessionId);
+        }
+
+        if (string.IsNullOrWhiteSpace(state.CallSid))
+        {
+            state.RequiredFieldWarningCount++;
+            state.FailureReason ??= "missing_callSid";
+            logger.LogWarning("Twilio media stream start event missing callSid. SessionId: {SessionId}. StreamSid: {StreamSid}.", state.SessionId, state.StreamSid);
+        }
 
         foreach (var track in ReadTracks(start))
             state.TracksReceived.Add(track);
@@ -202,15 +231,31 @@ public sealed class TwilioMediaStreamIngestionService(
 
     void ProcessMedia(JsonElement root, TwilioMediaStreamState state)
     {
-        var sequenceNumber = ParseLong(GetString(root, "sequenceNumber"));
+        var sequenceNumber = GetLongFlexible(root, "sequenceNumber");
         TrackSequence(state.AllSequences, sequenceNumber);
 
         var media = root.GetProperty("media");
-        var track = NormalizeTrack(GetString(media, "track"));
-        var chunkNumber = ParseLong(GetString(media, "chunk"));
-        var timestamp = ParseLong(GetString(media, "timestamp"));
-        var payload = GetString(media, "payload") ?? "";
-        var decodedBytes = Convert.FromBase64String(payload).LongLength;
+        var track = NormalizeTrack(GetStringOrNumberAsString(media, "track"));
+        var chunkNumber = GetLongFlexible(media, "chunk");
+        var timestamp = GetLongFlexible(media, "timestamp");
+        var payload = GetStringOrNumberAsString(media, "payload") ?? "";
+        long decodedBytes = 0;
+        try
+        {
+            decodedBytes = Convert.FromBase64String(payload).LongLength;
+        }
+        catch (FormatException)
+        {
+            state.InvalidPayloadCount++;
+            state.FailureReason ??= "invalid_media_payload";
+            logger.LogWarning(
+                "Twilio media stream media event contained invalid base64 payload. SessionId: {SessionId}. StreamSid: {StreamSid}. CallSid: {CallSid}. Track: {Track}.",
+                state.SessionId,
+                state.StreamSid,
+                state.CallSid,
+                track);
+        }
+
         var counters = track == "outbound" ? state.Outbound : state.Inbound;
 
         if (!state.TracksReceived.Contains(track))
@@ -279,6 +324,9 @@ public sealed class TwilioMediaStreamIngestionService(
             outOfOrderEventCount = state.AllSequences.OutOfOrderCount + state.Inbound.Chunks.OutOfOrderCount + state.Outbound.Chunks.OutOfOrderCount,
             ignoredEventCount = state.IgnoredEventCount,
             unknownEventCount = state.UnknownEventCount,
+            messageParseErrorCount = state.MessageParseErrorCount,
+            requiredFieldWarningCount = state.RequiredFieldWarningCount,
+            invalidPayloadCount = state.InvalidPayloadCount,
             customParameters = state.CustomParameters
         };
 
@@ -309,9 +357,9 @@ public sealed class TwilioMediaStreamIngestionService(
             return new TwilioMediaFormat(MediaEncoding, MediaSampleRate, MediaChannels);
 
         return new TwilioMediaFormat(
-            GetString(mediaFormat, "encoding") ?? MediaEncoding,
-            ParseInt(GetString(mediaFormat, "sampleRate")) ?? MediaSampleRate,
-            ParseInt(GetString(mediaFormat, "channels")) ?? MediaChannels);
+            GetStringOrNumberAsString(mediaFormat, "encoding") ?? MediaEncoding,
+            GetIntFlexible(mediaFormat, "sampleRate") ?? MediaSampleRate,
+            GetIntFlexible(mediaFormat, "channels") ?? MediaChannels);
     }
 
     static IReadOnlyDictionary<string, string> ReadCustomParameters(JsonElement start)
@@ -344,7 +392,7 @@ public sealed class TwilioMediaStreamIngestionService(
         foreach (var track in tracks.EnumerateArray())
         {
             if (track.ValueKind == JsonValueKind.String)
-                yield return NormalizeTrack(track.GetString());
+                yield return NormalizeTrack(GetStringOrNumberAsString(track));
         }
     }
 
@@ -375,20 +423,49 @@ public sealed class TwilioMediaStreamIngestionService(
             ? "outbound"
             : "inbound";
 
-    static string? GetString(JsonElement element, string propertyName) =>
-        element.TryGetProperty(propertyName, out var property) && property.ValueKind != JsonValueKind.Null
-            ? property.GetString()
+    static string? GetStringOrNumberAsString(JsonElement element, string propertyName) =>
+        element.TryGetProperty(propertyName, out var property)
+            ? GetStringOrNumberAsString(property)
             : null;
 
-    static long? ParseLong(string? value) =>
-        long.TryParse(value, out var parsed)
-            ? parsed
-            : null;
+    static string? GetStringOrNumberAsString(JsonElement element) =>
+        element.ValueKind switch
+        {
+            JsonValueKind.String => element.GetString(),
+            JsonValueKind.Number => element.GetRawText(),
+            JsonValueKind.True => "true",
+            JsonValueKind.False => "false",
+            JsonValueKind.Null or JsonValueKind.Undefined => null,
+            _ => element.ToString()
+        };
 
-    static int? ParseInt(string? value) =>
-        int.TryParse(value, out var parsed)
+    static long? GetLongFlexible(JsonElement element, string propertyName)
+    {
+        if (!element.TryGetProperty(propertyName, out var property))
+            return null;
+
+        if (property.ValueKind == JsonValueKind.Number && property.TryGetInt64(out var number))
+            return number;
+
+        var value = GetStringOrNumberAsString(property);
+        return long.TryParse(value, out var parsed)
             ? parsed
             : null;
+    }
+
+    static int? GetIntFlexible(JsonElement element, string propertyName)
+    {
+        if (!element.TryGetProperty(propertyName, out var property))
+            return null;
+
+        if (property.ValueKind == JsonValueKind.Number && property.TryGetInt32(out var number))
+            return number;
+
+        var value = GetStringOrNumberAsString(property);
+        return int.TryParse(value, out var parsed)
+            ? parsed
+            : null;
+    }
 
     static bool IsSensitiveParameterName(string name) =>
         name.Contains("secret", StringComparison.OrdinalIgnoreCase)
@@ -433,6 +510,9 @@ sealed class TwilioMediaStreamState(
     public string? FailureReason { get; set; }
     public int IgnoredEventCount { get; set; }
     public int UnknownEventCount { get; set; }
+    public int MessageParseErrorCount { get; set; }
+    public int RequiredFieldWarningCount { get; set; }
+    public int InvalidPayloadCount { get; set; }
     public IReadOnlyDictionary<string, string> CustomParameters { get; set; } = new Dictionary<string, string>();
 }
 
