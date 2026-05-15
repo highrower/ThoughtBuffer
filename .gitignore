@@ -62,6 +62,11 @@ Desktop.ini
 .background_output_*.txt
 app_logs.txt
 logs.zip
-extracted_logs/
+logs_*.zip
+webapp_logs.zip
+extracted_logs*/
 synthetic-live-stream.json
+voice-twiml-*.json
+CA*.json
+test_*.py
 docs/ai/thoughtbuffer-agent-handoff-context.md
