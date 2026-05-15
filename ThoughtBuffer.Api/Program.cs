@@ -7,6 +7,7 @@ using ThoughtBuffer.Services;
 using ThoughtBuffer.Storage;
 using System.Security;
 using System.Net.WebSockets;
+using System.Text.Json;
 
 var allowedAudioExtensions = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
 {
@@ -312,6 +313,26 @@ app.MapPost("/api/twilio/voice", async (
         recordingStatusCallback,
         containsStartStream,
         RedactPhoneLast4(twilioOptions.ForwardToPhoneNumber));
+
+    if (request.HasFormContentType)
+    {
+        var form = await request.ReadFormAsync(cancellationToken);
+        var callSid = form["CallSid"].FirstOrDefault();
+        if (!string.IsNullOrWhiteSpace(callSid))
+        {
+            var artifactStorage = request.HttpContext.RequestServices.GetRequiredService<IArtifactStorage>();
+            _ = SaveTwilioVoiceDebugArtifactAsync(
+                artifactStorage,
+                callSid,
+                twilioOptions,
+                twiml,
+                recordingStatusCallback,
+                mediaStreamUri,
+                containsStartStream,
+                cancellationToken);
+        }
+    }
+
     return Results.Text(twiml, "application/xml");
 });
 
@@ -739,6 +760,45 @@ static bool ContainsStartStream(string twiml) =>
     twiml.Contains("<Start>", StringComparison.Ordinal)
     && twiml.Contains("<Stream", StringComparison.Ordinal);
 
+static async Task SaveTwilioVoiceDebugArtifactAsync(
+    IArtifactStorage artifactStorage,
+    string callSid,
+    TwilioOptions twilioOptions,
+    string twiml,
+    Uri recordingStatusCallback,
+    Uri mediaStreamUri,
+    bool containsStartStream,
+    CancellationToken cancellationToken)
+{
+    try
+    {
+        var sanitizedTwiml = RedactConfiguredPhoneNumber(twiml, twilioOptions.ForwardToPhoneNumber);
+        var debugData = new
+        {
+            callSid,
+            generatedAtUtc = DateTime.UtcNow,
+            enableLiveMediaStreams = twilioOptions.EnableLiveMediaStreams,
+            containsStartStream,
+            streamUrl = mediaStreamUri.ToString(),
+            streamTrack = twilioOptions.LiveStreamTrack,
+            streamName = twilioOptions.LiveStreamName,
+            recordingStatusCallback = recordingStatusCallback.ToString(),
+            sanitizedTwiml
+        };
+
+        var json = JsonSerializer.Serialize(debugData, new JsonSerializerOptions { WriteIndented = true });
+        await artifactStorage.SaveTextAsync(
+            ArtifactKind.Metadata,
+            $"sessions/twilio-voice-debug/{callSid}/voice-twiml.json",
+            json,
+            cancellationToken);
+    }
+    catch
+    {
+        // Fire and forget, don't break the voice call if debug storage fails
+    }
+}
+
 static string BuildVoiceTwiML(TwilioOptions twilioOptions, Uri recordingStatusCallback, Uri mediaStreamUri)
 {
     if (string.IsNullOrWhiteSpace(twilioOptions.ForwardToPhoneNumber))
@@ -760,6 +820,23 @@ static string BuildVoiceTwiML(TwilioOptions twilioOptions, Uri recordingStatusCa
         var escapedStreamName = SecurityElement.Escape(twilioOptions.LiveStreamName);
         var escapedStreamUri = SecurityElement.Escape(mediaStreamUri.ToString());
         var escapedTrack = SecurityElement.Escape(twilioOptions.LiveStreamTrack);
+
+        if (twilioOptions.LiveStreamTwiMLMode.Equals("StreamOnlyTest", StringComparison.OrdinalIgnoreCase))
+        {
+            return $"""
+<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+  <Start>
+    <Stream name="{escapedStreamName}" url="{escapedStreamUri}" track="{escapedTrack}">
+      <Parameter name="source" value="twilio-live-media-stream" />
+      <Parameter name="mode" value="sales-call-training" />
+    </Stream>
+  </Start>
+  <Say>Testing stream only.</Say>
+  <Pause length="10" />
+</Response>
+""";
+        }
 
         return $"""
 <?xml version="1.0" encoding="UTF-8"?>

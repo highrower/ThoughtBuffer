@@ -16,6 +16,7 @@ public sealed class TwilioOptions
     public bool EnableLiveMediaStreams { get; set; } = false;
     public string LiveStreamTrack { get; set; } = "both_tracks";
     public string LiveStreamName { get; set; } = "thoughtbuffer-live";
+    public string LiveStreamTwiMLMode { get; set; } = "Default";
     public bool LiveStreamStoreMetadata { get; set; } = true;
     public bool LiveStreamStoreRawChunks { get; set; } = false;
 }

@@ -89,6 +89,7 @@ public static class ThoughtBufferConfiguration
                 : false,
             LiveStreamTrack = section[nameof(TwilioOptions.LiveStreamTrack)] ?? "both_tracks",
             LiveStreamName = section[nameof(TwilioOptions.LiveStreamName)] ?? "thoughtbuffer-live",
+            LiveStreamTwiMLMode = section[nameof(TwilioOptions.LiveStreamTwiMLMode)] ?? "Default",
             LiveStreamStoreMetadata = bool.TryParse(section[nameof(TwilioOptions.LiveStreamStoreMetadata)], out var liveStreamStoreMetadata)
                 ? liveStreamStoreMetadata
                 : true,
