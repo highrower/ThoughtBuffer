@@ -364,6 +364,8 @@ app.MapGet("/api/twilio/media-stream", async (
     ILogger<Program> logger,
     CancellationToken cancellationToken) =>
 {
+    logger.LogInformation("Media stream endpoint hit. IsWebSocket: {IsWebSocket}", context.WebSockets.IsWebSocketRequest);
+
     if (!context.WebSockets.IsWebSocketRequest)
     {
         logger.LogWarning("Twilio media stream endpoint rejected non-WebSocket request.");
@@ -827,13 +829,11 @@ static string BuildVoiceTwiML(TwilioOptions twilioOptions, Uri recordingStatusCa
 <?xml version="1.0" encoding="UTF-8"?>
 <Response>
   <Start>
-    <Stream name="{escapedStreamName}" url="{escapedStreamUri}" track="{escapedTrack}">
-      <Parameter name="source" value="twilio-live-media-stream" />
-      <Parameter name="mode" value="sales-call-training" />
-    </Stream>
+    <Stream url="{escapedStreamUri}" track="{escapedTrack}" />
   </Start>
-  <Say>Testing stream only.</Say>
-  <Pause length="10" />
+  <Say>Stream started. You have 30 seconds to speak for the test. Testing 1 2 3.</Say>
+  <Pause length="30" />
+  <Say>Test complete. Hanging up now. Goodbye.</Say>
 </Response>
 """;
         }
